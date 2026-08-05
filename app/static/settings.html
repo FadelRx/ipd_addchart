@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPDaddChart — ตั้งค่า</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>⚙ ตั้งค่า</h1>
+  <nav><a href="/">หน้าหลัก</a><a href="/logs">ประวัติการรัน</a></nav>
+</header>
+<main>
+
+<div class="card">
+  <h2>settings.json ของเครื่องนี้</h2>
+  <div class="notice">
+    รหัสผ่าน (hosxp_db.password / hosxp_app.password) จะแสดงเป็นค่าว่างเสมอ —
+    ถ้า<b>ปล่อยว่าง</b>ระบบจะคงค่าเดิมไว้ ใส่ค่าใหม่เมื่อต้องการเปลี่ยนเท่านั้น<br>
+    จุดที่ต้องตั้งก่อนใช้งานครั้งแรก: <code>hosxp_db.user/password</code>, <code>hosxp_app.username/password</code>
+    และ map ปุ่ม <code>robot.steps.add_cont_button</code> ด้วย <code>tools\inspect_hosxp.py</code>
+  </div>
+  <textarea id="editor" class="json" spellcheck="false"></textarea>
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="btnSave">💾 บันทึก</button>
+    <button id="btnReload">โหลดใหม่</button>
+    <span id="msg" class="muted"></span>
+  </div>
+  <div class="error" id="err"></div>
+</div>
+
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+let loaded = false;
+
+async function load() {
+  $("err").textContent = ""; $("msg").textContent = "";
+  try {
+    const r = await fetch("/api/settings");
+    if (!r.ok) throw new Error(r.status + " " + r.statusText);
+    $("editor").value = JSON.stringify(await r.json(), null, 2);
+    loaded = true;
+  } catch (e) {
+    loaded = false;
+    $("err").textContent = "โหลดการตั้งค่าไม่สำเร็จ: " + e.message + " — ห้ามกดบันทึกจนกว่าจะโหลดได้";
+  }
+}
+
+$("btnReload").addEventListener("click", load);
+$("btnSave").addEventListener("click", async () => {
+  $("err").textContent = ""; $("msg").textContent = "";
+  if (!loaded) {
+    $("err").textContent = "ยังโหลดการตั้งค่าเดิมไม่สำเร็จ — กด 'โหลดใหม่' ก่อน ไม่งั้นอาจเขียนทับค่าเดิมทั้งหมด";
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse($("editor").value);
+  } catch (e) {
+    $("err").textContent = "JSON ไม่ถูกต้อง: " + e.message;
+    return;
+  }
+  try {
+    const r = await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed)
+    });
+    if (!r.ok) {
+      let detail = r.status + " " + r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    $("msg").textContent = "บันทึกแล้ว ✅ (มีผลกับงานรอบถัดไป)";
+    load();
+  } catch (e) {
+    $("err").textContent = "บันทึกไม่สำเร็จ: " + e.message;
+  }
+});
+
+load();
+</script>
+</body>
+</html>

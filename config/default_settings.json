@@ -1,0 +1,155 @@
+{
+  "hosxp_db": {
+    "host": "192.168.0.3",
+    "port": 3306,
+    "database": "hos",
+    "user": "",
+    "password": "",
+    "charset": "tis620",
+    "connect_timeout": 5,
+    "read_timeout": 60,
+    "drug_lookback_days": 30,
+    "filters": {
+      "comment": "ตัดแถว admit ค้างที่ไม่ได้นอนอยู่จริงออก (ผู้ป่วยกลับบ้านแล้วแต่ไม่ได้คีย์จำหน่าย) — max_los_days: 0 = ไม่จำกัดวันนอน",
+      "max_los_days": 365,
+      "require_ward": true,
+      "require_name": true,
+      "drop_superseded_admits": true
+    }
+  },
+  "hosxp_app": {
+    "exe_path": "C:\\Users\\ASUS01\\AppData\\Roaming\\BMS\\HOSxPv3\\hosmy.exe",
+    "username": "",
+    "password": "",
+    "auto_login": true
+  },
+  "robot": {
+    "main_window": { "class_name": "TMainForm", "title_re": ".*HOSxP.*" },
+    "login_form": {
+      "class_name": "TLoginForm2",
+      "edit_class": "TcxCustomInnerTextEdit",
+      "detect_password_field": true,
+      "user_edit_index": 1,
+      "pass_edit_index": 0,
+      "ok_button": { "class_name": "TcxButton", "title_re": ".*ตกลง.*" }
+    },
+    "department_form": {
+      "class_name": "TDepartmentSelectForm",
+      "ok_button": { "class_name": "TcxButton", "title_re": ".*ตกลง.*" }
+    },
+    "tips_form": {
+      "class_name": "TJvForm",
+      "title_re": ".*Tips.*",
+      "close_button": { "class_name": "TJvCustomButton", "title_re": ".*ปิด.*" }
+    },
+    "ipd_form": {
+      "class_name": "TIPDRxForm",
+      "title_re": ".*IPD Medication Profile.*",
+      "patient_key": "hn",
+      "select_group": { "class_name": "TcxGroupBox", "title_re": ".*เลือกคนไข้.*" },
+      "patient_edit_class": "TdxEdit",
+      "patient_edit_index": 0,
+      "after_type_keys": [
+        { "label": "ยืนยัน HN", "keys": "{ENTER}", "wait": 1.2 },
+        { "label": "เลือก visit ล่าสุด", "keys": "{ENTER}", "wait": 1.5 }
+      ],
+      "info_group": { "class_name": "TcxGroupBox", "title_re": ".*ข้อมูลผู้ป่วย.*" },
+      "select_new_button": {
+        "comment": "ปุ่มกลับไปหน้าเลือกคนไข้ — ใช้เมื่อหน้าจอยังค้างอยู่ที่คนก่อนหน้า (กรอบ 'เลือกคนไข้' จะถูกซ่อนตอนมีคนไข้เปิดอยู่)",
+        "label": "เลือกใหม่",
+        "class_name": "TcxButton",
+        "title_re": "^\\s*เลือกใหม่\\s*$"
+      },
+      "drug_tab": { "class_name": "TcxTabSheet", "title_re": "^สั่งยา" }
+    },
+    "steps": {
+      "action_buttons": [
+        { "label": "New", "class_name": "TcxButton", "title_re": "^New$", "wait_after": 1.0 },
+        { "label": "Add Chart F5", "class_name": "TcxButton", "title_re": "^Add Chart F5$", "wait_after": 1.5 }
+      ],
+      "save_button": { "label": "บันทึกสั่งยา F9", "class_name": "TcxButton", "title_re": "บันทึกสั่งยา" },
+      "require_confirm": true,
+      "confirm_timeout": 12,
+      "confirm_key": "{ENTER}",
+      "confirm_dialog": {
+        "comment": "กล่องยืนยันของ HosXP หลังกดบันทึก: หัวเรื่อง Confirm ปุ่ม Yes/No ข้อความ 'Please confirm save' (อ่านได้ด้วย UI Automation เท่านั้น เพราะเป็น Task Dialog) — ถ้าข้อความเป็นอย่างอื่น เช่นคำเตือนแพ้ยา ระบบจะหยุดให้คนอ่านเอง",
+        "title_re": "^Confirm$",
+        "message_re": "^Please confirm save$",
+        "yes_button": { "class_name": "Button", "title_re": "^&?(Yes|ใช่|ตกลง|OK)$" }
+      },
+      "extra_enter_after_save": 1
+    },
+    "popups": {
+      "comment": "rules = dialog ที่รู้จักแล้วและตัดสินใจไว้ล่วงหน้า (action: click = ปิดแล้วไปต่อ, skip_patient = ปิดแล้วข้ามคนนี้, halt = หยุดงาน) / allow = dialog ที่ยอมให้กด Enter ผ่านได้ / dialog ที่ไม่เข้าข่ายทั้งสองอย่างจะหยุดงานเสมอ",
+      "rules": [
+        {
+          "label": "มีคนอื่นเปิดเวชระเบียนคนนี้ค้างอยู่",
+          "match": "Someone using this patient record",
+          "action": "skip_patient",
+          "button": { "class_name": "Button", "title_re": "^&?(OK|ตกลง)$" }
+        },
+        {
+          "label": "กลับไปหน้าเลือกคนไข้หลังบันทึกเสร็จ (Rx-Queue / Select new patient ?)",
+          "comment": "HosXP ไม่ยอมให้อ่านข้อความในกล่องนี้ (WM_GETTEXT คืนค่าว่างทุกครั้ง) จึงต้องมี dialog เป็นทางสำรองให้จับจากรูปพรรณ — ใช้ได้เฉพาะตอนที่อ่านข้อความไม่ได้เลย อยู่ในจังหวะที่ระบุ และโรบอทเคยกดบันทึกสำเร็จมาแล้วในรอบนี้เท่านั้น",
+          "match": "Select new patient",
+          "action": "click",
+          "button": { "class_name": "Button", "title_re": "^&?(Yes|ใช่)$" },
+          "dialog": {
+            "class_name": "#32770",
+            "title_re": "^Confirm$",
+            "buttons": ["&Yes", "&No"],
+            "contexts": ["save", "เตรียมหน้าจอ", "หลังกดเลือกใหม่"],
+            "require_after_save": true
+          }
+        },
+        {
+          "label": "ไม่มีรายการยาให้บันทึก (No Item)",
+          "comment": "คนไข้ที่ไม่มียา continue ให้ยกมา — HosXP ตอบว่า No Item แปลว่าไม่มีอะไรถูกบันทึก จึงข้ามคนนี้ได้อย่างปลอดภัย",
+          "match": "No\\s*Item",
+          "action": "skip_patient",
+          "means_not_saved": true,
+          "button": { "class_name": "Button", "title_re": "^&?(OK|ตกลง)$" }
+        },
+        {
+          "label": "คำเตือนยาตีกัน (Drug Interaction)",
+          "comment": "ตาราง Level ในหน้าต่างนี้เป็น TcxGrid ที่อ่านค่าไม่ได้ทั้ง WM_GETTEXT และ UI Automation จึงไม่มีทางรู้ว่า level เท่าไหร่ ห้ามเดาเด็ดขาด / ทางที่เลือก: ปิดหน้าต่าง แล้วติดธง 'ต้องตรวจเอง' ให้คนไข้รายนั้น (ไม่คีย์ซ้ำอัตโนมัติ) แล้วทำคนถัดไปต่อ ไม่หยุดทั้งงาน / กดเฉพาะปุ่ม 'ปิด' เท่านั้น ห้ามแตะช่อง 'ไม่ต้องเตือนเรื่องนี้อีก' เพราะจะทำให้คำเตือนหายไปถาวรสำหรับทุกคน",
+          "class_name_re": "^T?DrugInteractionAlertForm$",
+          "action": "review_patient",
+          "button": { "title_re": "^\\s*ปิด\\s*$" }
+        },
+        {
+          "label": "หน้าต่าง Note ของคนไข้",
+          "comment": "จับด้วยชื่อคลาสหน้าต่าง ไม่ใช่ข้อความ เพราะเนื้อ Note เป็นข้อมูลทางคลินิกที่อาจมีคำไปชนกฎคำเตือน และหน้าต่างนี้ลอยทับปุ่มที่ต้องกด ต้องปิดก่อนเสมอ / ใช้ class_name_re เพราะคลาสจริงคือ TPtNoteViewForm ส่วน PtNoteViewForm เป็นหัวเรื่องหน้าต่าง (run 324 เคยตั้งผิดจนหาไม่เจอ)",
+          "class_name_re": "^T?PtNoteViewForm$",
+          "action": "click",
+          "button": { "title_re": "^\\s*ปิด\\s*$" }
+        }
+      ],
+      "allow": []
+    },
+    "timing": {
+      "after_patient_type": 0.5,
+      "load_popup_checks": 5,
+      "between_enters": 0.5,
+      "patient_load_timeout": 20,
+      "after_patient_load": 1.5,
+      "after_select_new": 1.5,
+      "button_wait_timeout": 10,
+      "after_save_key": 1.0,
+      "post_save_checks": 2,
+      "post_save_wait": 25,
+      "between_patients": 3.0,
+      "find_window_timeout": 15
+    },
+    "verify_patient_loaded": "strict",
+    "dedup_window_hours": 6,
+    "error_popup_keywords": [
+      "ผิดพลาด", "ไม่พบ", "ไม่สามารถ", "Error", "Exception",
+      "แพ้ยา", "แพ้", "Allerg", "Interaction", "ตีกัน",
+      "ซ้ำซ้อน", "ซ้ำ", "Duplicate", "เกินขนาด", "Overdose",
+      "เตือน", "Warning", "ระวัง", "ตั้งครรภ์", "ไต", "ตับ"
+    ],
+    "circuit_breaker": { "pause_after_fails": 3, "pause_seconds": 60, "abort_after_fails": 6 }
+  },
+  "server": { "port": 8770 }
+}

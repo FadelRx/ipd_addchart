@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPDaddChart — Add ยา Continue ผู้ป่วยใน</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>💊 IPDaddChart — Add ยา Continue ผู้ป่วยใน (HosXP)</h1>
+  <nav><a href="/logs">ประวัติการรัน</a><a href="/settings">ตั้งค่า</a></nav>
+</header>
+<main>
+
+<div class="notice" id="elevWarn" style="display:none;background:#fef2f2;border-color:#fecaca;color:#991b1b"></div>
+
+<div class="card">
+  <h2>1) รายชื่อผู้ป่วยที่ admit อยู่</h2>
+  <div class="row">
+    <button class="primary" id="btnFetchDb">⬇ ดึงจากฐานข้อมูล HOSxP</button>
+    <button id="btnPickExcel">📄 เลือกไฟล์ Excel (an หรือ hn)</button>
+    <input type="file" id="fileExcel" accept=".xlsx,.xlsm" style="display:none">
+    <span class="muted" id="srcInfo"></span>
+  </div>
+  <div class="error" id="srcError"></div>
+  <div id="listWrap" style="display:none">
+    <div class="row" style="margin-top:10px">
+      <label class="chk">แสดง ward: <select id="wardFilter"></select></label>
+      <label class="chk"><input type="checkbox" id="chkAll" checked> เลือกทั้งหมดที่แสดงอยู่</label>
+      <span class="muted" id="selCount"></span>
+    </div>
+    <div class="notice" id="pickWardHint" style="display:none">
+      เลือก ward ที่จะคีย์จากช่อง "แสดง ward" ด้านบนก่อน — โปรแกรมจะคีย์เฉพาะคนที่แสดงอยู่ในตารางเท่านั้น
+    </div>
+    <div class="tablewrap" id="tableWrap">
+      <table id="ptTable">
+        <thead><tr><th></th><th>AN</th><th>HN</th><th>ชื่อ-สกุล</th><th>Ward</th><th>วันนอน</th><th>รายการยา</th><th>สถานะ</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>2) เริ่มคีย์</h2>
+  <div class="notice">
+    เปิดโปรแกรม HosXP ทิ้งไว้บนหน้าจอ และ<b>อย่าใช้เมาส์/คีย์บอร์ดระหว่างโรบอททำงาน</b> —
+    ครั้งแรกให้รันโหมดทดสอบก่อนเสมอ (โหลดคนไข้อย่างเดียว ไม่กดเพิ่มยา/บันทึก)
+  </div>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="chkDry" checked> โหมดทดสอบ (dry-run — ไม่เพิ่มยา ไม่บันทึก)</label>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button class="primary big" id="btnRun">▶ เริ่มคีย์</button>
+    <button class="danger" id="btnStop" style="display:none">■ หยุด</button>
+    <span id="runPhase" class="muted"></span>
+  </div>
+  <div class="error" id="runError"></div>
+  <div id="progWrap" style="display:none">
+    <div id="modeBanner" class="notice" style="margin-top:12px"></div>
+    <div class="progress"><div id="progBar"></div></div>
+    <div class="row">
+      <span id="progText" class="muted"></span>
+      <span id="curPatient" class="muted"></span>
+    </div>
+    <div class="logbox" id="liveLog" style="margin-top:10px"></div>
+  </div>
+</div>
+
+</main>
+<script>
+let patients = [];
+let wardFilter = "";     // "" = ยังไม่เลือก ward, "*" = ทุก ward, นอกนั้นคือชื่อ ward
+let source = "";
+let patientKey = "hn";   // ช่องที่โรบอทจะคีย์ลง HosXP (ตั้งได้ที่หน้าตั้งค่า)
+let pollTimer = null;
+let pollBusy = false;
+let watchRunId = null;
+let lastLogId = 0;
+let stopRequested = false;
+
+const $ = (id) => document.getElementById(id);
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+
+const NO_WARD = "(ไม่ระบุ ward)";
+
+function isRunnable(p) {
+  return !!p[patientKey] && !p.needs_review && !p.done_today;
+}
+
+// จัดกลุ่มตาม ward เพื่อให้เภสัชกรเลือกคีย์ทีละตึกได้ — เรียงตามชื่อ ward แบบไทย
+function groupByWard() {
+  const map = new Map();
+  patients.forEach((p, i) => {
+    const w = String(p.ward_name || p.ward || "").trim() || NO_WARD;
+    if (!map.has(w)) map.set(w, []);
+    map.get(w).push(i);
+  });
+  return [...map.entries()]
+    .sort((a, b) => (a[0] === NO_WARD) - (b[0] === NO_WARD) || a[0].localeCompare(b[0], "th"))
+    .map(([ward, idx]) => ({ ward, idx }));
+}
+
+function rowHtml(p, i) {
+  const runnable = !!p[patientKey] && !p.needs_review;
+  let status;
+  if (p.needs_review) {
+    status = `<span class="badge fail">⚠ ต้องตรวจเอง</span> <span class="muted">เคยจบแบบไม่รู้ผลการบันทึก ${esc(p.done_info || "")}</span>` +
+      ` <button data-clear="${i}" style="padding:2px 8px;font-size:12px">ตรวจแล้ว ยายังไม่เข้า → ให้ลองใหม่</button>` +
+      ` <button data-confirm="${i}" style="padding:2px 8px;font-size:12px">ตรวจแล้ว ยาเข้าแล้ว → ไม่ต้องคีย์ซ้ำ</button>`;
+  } else if (p.done_today) {
+    status = `<span class="badge done">ทำแล้ว</span> <span class="muted">${esc(p.done_info || "")}</span>`;
+  } else if (!runnable) {
+    status = `<span class="badge fail">ไม่มี ${esc(patientKey.toUpperCase())}</span> <span class="muted">${esc(p.note || "")}</span>`;
+  } else {
+    status = '<span class="badge wait">รอคีย์</span>';
+  }
+  const los = p.los_days === "" || p.los_days === undefined ? "" : String(p.los_days);
+  const losCell = (los !== "" && +los > 180)
+    ? `<span class="badge skip">${esc(los)} วัน</span>` : esc(los);
+  return `<td><input type="checkbox" data-i="${i}" ${isRunnable(p) ? "checked" : ""}></td>` +
+    `<td>${esc(p.an) || "-"}</td><td>${esc(p.hn)}</td><td>${esc(p.ptname)}</td>` +
+    `<td>${esc(p.ward_name || p.ward)}</td><td>${losCell}</td><td>${drugCell(p)}</td><td>${status}</td>`;
+}
+
+// จำนวนรายการยา continue ที่ Add Chart F5 จะยกมา — 0 แปลว่ากดไปก็จะเจอ "No Item"
+function drugCell(p) {
+  if (p.drug_count === undefined || p.drug_count === null) return '<span class="muted">—</span>';
+  const n = +p.drug_count;
+  if (n === 0) {
+    return '<span class="badge skip" title="ไม่พบรายการยาของ AN นี้ในช่วงที่ตรวจ">0 — จะได้ No Item</span>';
+  }
+  return `<span title="จากชาร์ตยาวันที่ ${esc(p.drug_rx_date)}">${n} รายการ</span>` +
+    `<br><span class="muted" style="font-size:12px">${esc(p.drug_rx_date)}</span>`;
+}
+
+// เติมตัวเลือกใน dropdown กรอง ward — รักษาค่าที่เลือกไว้ถ้ายังมี ward นั้นอยู่
+function buildWardFilter(groups) {
+  const sel = $("wardFilter");
+  const total = patients.length;
+  const opts = [`<option value="">— เลือก ward —</option>`];
+  groups.forEach(g => {
+    const waiting = g.idx.filter(i => isRunnable(patients[i])).length;
+    opts.push(`<option value="${esc(g.ward)}">${esc(g.ward)} (${g.idx.length} คน · รอคีย์ ${waiting})</option>`);
+  });
+  opts.push(`<option value="*">ทุก ward (${total} คน)</option>`);
+  sel.innerHTML = opts.join("");
+  // ward ที่เลือกไว้อาจหายไปหลังโหลดรายชื่อใหม่ — ถอยไปเป็น "ยังไม่เลือก" แทนที่จะโชว์คนผิดตึก
+  if (wardFilter !== "*" && wardFilter && !groups.some(g => g.ward === wardFilter)) wardFilter = "";
+  sel.value = wardFilter;
+}
+
+// ward ที่จะแสดงในตาราง — ค่าเริ่มต้นคือ "ยังไม่เลือก" ไม่กางคนไข้ทั้งโรงพยาบาลออกมา
+function shownGroups(groups) {
+  if (wardFilter === "*") return groups;
+  if (!wardFilter) return [];
+  return groups.filter(g => g.ward === wardFilter);
+}
+
+function renderTable() {
+  const tb = $("ptTable").querySelector("tbody");
+  tb.innerHTML = "";
+  const all = groupByWard();
+  buildWardFilter(all);
+  const shown = shownGroups(all);
+  $("pickWardHint").style.display = shown.length ? "none" : "";
+  $("tableWrap").style.display = shown.length ? "" : "none";
+  shown.forEach((g, gi) => {
+    const waiting = g.idx.filter(i => isRunnable(patients[i])).length;
+    const noDrug = g.idx.filter(i => isRunnable(patients[i]) && patients[i].drug_count === 0).length;
+    const head = document.createElement("tr");
+    head.className = "grp";
+    head.innerHTML =
+      `<td colspan="8">` +
+      `<label class="chk"><input type="checkbox" data-ward="${gi}" ${waiting ? "checked" : ""} ${waiting ? "" : "disabled"}>` +
+      `<span class="wardname">${esc(g.ward)}</span></label> ` +
+      `<span class="muted">${g.idx.length} คน · รอคีย์ ${waiting} คน` +
+      (noDrug ? ` · <span class="badge skip">ไม่มียา ${noDrug} คน</span>` : "") + `</span> ` +
+      `<button class="toggle" data-toggle="${gi}" title="ย่อ/ขยาย">▾</button></td>`;
+    tb.appendChild(head);
+    g.idx.forEach(i => {
+      const tr = document.createElement("tr");
+      tr.dataset.grp = gi;
+      if (patients[i].done_today) tr.className = "done";
+      tr.innerHTML = rowHtml(patients[i], i);
+      tb.appendChild(tr);
+    });
+  });
+  $("listWrap").style.display = "";
+  const thead = $("ptTable").querySelector("thead");
+  document.documentElement.style.setProperty("--thead-h", thead.getBoundingClientRect().height + "px");
+  syncWardBoxes();
+  updateSelCount();
+}
+
+function selectedPatients() {
+  return [...$("ptTable").querySelectorAll("tbody input[data-i]")]
+    .filter(c => c.checked).map(c => patients[+c.dataset.i]);
+}
+
+// ช่องหัวกลุ่มสะท้อนสถานะจริงของแถวข้างใน — ติ๊กบางส่วนให้ขึ้นขีดกลาง
+function syncWardBoxes() {
+  $("ptTable").querySelectorAll("tbody input[data-ward]").forEach(box => {
+    const rows = wardRowBoxes(box.dataset.ward).filter(c => !c.disabled);
+    const on = rows.filter(c => c.checked).length;
+    box.checked = rows.length > 0 && on === rows.length;
+    box.indeterminate = on > 0 && on < rows.length;
+  });
+}
+
+function wardRowBoxes(gi) {
+  return [...$("ptTable").querySelectorAll(`tbody tr[data-grp="${gi}"] input[data-i]`)];
+}
+
+function updateSelCount() {
+  const sel = selectedPatients();
+  const shown = $("ptTable").querySelectorAll("tbody input[data-i]").length;
+  const wards = new Set(sel.map(p => String(p.ward_name || p.ward || "").trim() || NO_WARD));
+  // นับจาก "ที่แสดงอยู่" ไม่ใช่ทั้งหมด เพราะคีย์ได้เฉพาะคนที่ผ่านตัวกรองมาอยู่ในตาราง
+  $("selCount").textContent = shown
+    ? `เลือก ${sel.length} จาก ${shown} คนที่แสดงอยู่` +
+      (wards.size > 1 ? ` · ${wards.size} ward` : "") +
+      (shown < patients.length ? ` (ทั้งหมด ${patients.length} คน)` : "")
+    : `ยังไม่ได้เลือก ward — มีผู้ป่วยทั้งหมด ${patients.length} คน`;
+}
+
+$("wardFilter").addEventListener("change", () => {
+  wardFilter = $("wardFilter").value;
+  renderTable();
+});
+
+$("ptTable").addEventListener("change", (ev) => {
+  const box = ev.target;
+  if (box.dataset.ward !== undefined) {
+    // ติ๊กหัว ward = เลือกทั้งตึก แต่ข้ามคนที่ทำไปแล้ว/ต้องตรวจเอง/ไม่มีคีย์
+    wardRowBoxes(box.dataset.ward).forEach(c => {
+      c.checked = box.checked && isRunnable(patients[+c.dataset.i]);
+    });
+  }
+  syncWardBoxes();
+  updateSelCount();
+});
+
+// ย่อ/ขยายรายชื่อในแต่ละ ward
+$("ptTable").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-toggle]");
+  if (!btn) return;
+  const gi = btn.dataset.toggle;
+  const rows = [...$("ptTable").querySelectorAll(`tbody tr[data-grp="${gi}"]`)];
+  const collapse = !rows[0]?.classList.contains("hidden");
+  rows.forEach(r => r.classList.toggle("hidden", collapse));
+  btn.textContent = collapse ? "▸" : "▾";
+});
+
+// ปลดสถานะ "ต้องตรวจเอง" — ใช้เมื่อเภสัชกรเข้าไปดูใน HosXP แล้วพบว่ายายังไม่เข้า
+$("ptTable").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-clear]");
+  if (!btn) return;
+  const p = patients[+btn.dataset.clear];
+  if (!confirm(
+    `ยืนยันว่าเข้าไปตรวจใน HosXP แล้ว และ ${p.ptname || ""} (HN ${p.hn}) ยังไม่ได้ยารอบนี้ ?\n\n` +
+    `ถ้ายาเข้าไปแล้วแต่กดปุ่มนี้ คนไข้จะได้ยาซ้ำ`)) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/patients/clear_review", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ an: p.an, hn: p.hn })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    p.needs_review = false; p.done_today = false; p.done_info = "";
+    renderTable();
+  } catch (e) {
+    btn.disabled = false;
+    $("srcError").textContent = "ปลดสถานะไม่สำเร็จ: " + e.message;
+  }
+});
+
+// ยืนยันว่า "ยาเข้าไปแล้ว" — ใช้เมื่อเภสัชกรตรวจใน HosXP แล้วพบว่ารายการยาถูกบันทึกเรียบร้อย
+// (กรณีที่โรบอทกดบันทึกสำเร็จแต่สะดุดตอนเก็บกวาดหน้าจอ จึงไม่รู้ผล)
+$("ptTable").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-confirm]");
+  if (!btn) return;
+  const p = patients[+btn.dataset.confirm];
+  if (!confirm(
+    `ยืนยันว่าเข้าไปตรวจใน HosXP แล้ว และ ${p.ptname || ""} (HN ${p.hn}) ได้ยารอบนี้เรียบร้อยแล้ว ?\n\n` +
+    `ระบบจะนับว่า "ทำแล้ว" และไม่คีย์ให้อีกในรอบถัดไป`)) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/patients/confirm_review", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ an: p.an, hn: p.hn })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    p.needs_review = false; p.done_today = true;
+    renderTable();
+  } catch (e) {
+    btn.disabled = false;
+    $("srcError").textContent = "ยืนยันไม่สำเร็จ: " + e.message;
+  }
+});
+$("chkAll").addEventListener("change", () => {
+  const on = $("chkAll").checked;
+  $("ptTable").querySelectorAll("tbody input[data-i]").forEach(c => {
+    c.checked = on && isRunnable(patients[+c.dataset.i]);
+  });
+  syncWardBoxes();
+  updateSelCount();
+});
+
+async function fetchDb() {
+  $("srcError").textContent = ""; $("srcInfo").textContent = "กำลังดึงข้อมูล...";
+  try {
+    const r = await fetch("/api/patients/db");
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    patients = j.patients; source = "db"; patientKey = j.patient_key || "hn";
+    const wards = new Set(patients.map(p => String(p.ward_name || p.ward || "").trim() || NO_WARD));
+    let info = `จากฐานข้อมูล — ผู้ป่วย admit อยู่ ${patients.length} คน ใน ${wards.size} ward` +
+      ` (โรบอทจะคีย์ด้วย ${patientKey.toUpperCase()})`;
+    const fs = j.filter_stats;
+    if (fs && fs.dropped_total) {
+      const why = Object.entries(fs.dropped || {}).map(([k, v]) => `${k} ${v}`).join(", ");
+      info += ` — ตัดแถวค้างที่ไม่ได้นอนจริงออก ${fs.dropped_total} คน (${why})`;
+    }
+    const noDrug = patients.filter(p => p.drug_count === 0).length;
+    if (noDrug) info += ` — ⚠ ${noDrug} คนไม่มียา continue (กดแล้วจะได้ No Item)`;
+    $("srcInfo").textContent = info;
+    if (j.drug_count_error) {
+      $("srcError").textContent = "⚠ ดึงจำนวนรายการยาไม่ได้: " + j.drug_count_error +
+        " (คอลัมน์ 'รายการยา' จะว่าง — ไม่กระทบการคีย์)";
+    }
+    renderTable();
+  } catch (e) {
+    $("srcInfo").textContent = "";
+    $("srcError").textContent = "ดึงข้อมูลไม่สำเร็จ: " + e.message;
+  }
+}
+$("btnFetchDb").addEventListener("click", fetchDb);
+
+$("btnPickExcel").addEventListener("click", () => $("fileExcel").click());
+$("fileExcel").addEventListener("change", async () => {
+  const f = $("fileExcel").files[0];
+  if (!f) return;
+  $("srcError").textContent = ""; $("srcInfo").textContent = "กำลังอ่านไฟล์...";
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const r = await fetch("/api/patients/excel", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    patients = j.patients; source = "excel"; patientKey = j.patient_key || "hn";
+    let info = `จากไฟล์ ${f.name} — ${patients.length} คน (โรบอทจะคีย์ด้วย ${patientKey.toUpperCase()})`;
+    if (j.enriched_from_db) info += ` (เติม AN จาก DB ให้ ${j.enriched_from_db} คน)`;
+    if (j.ambiguous_hn) info += ` — ⚠ ${j.ambiguous_hn} คนมี admit ค้างหลายราย ต้องใส่ AN เอง`;
+    if (j.missing_key_count) info += ` — ⚠ ${j.missing_key_count} คนไม่มี ${patientKey.toUpperCase()} จะถูกข้าม`;
+    $("srcInfo").textContent = info;
+    if (j.db_lookup_error) {
+      $("srcError").textContent =
+        "⚠ แปลง HN เป็น AN ไม่ได้ — ต่อฐานข้อมูล HOSxP ไม่สำเร็จ: " + j.db_lookup_error +
+        " (คนที่ไม่มี AN จะถูกข้าม ไม่ได้แปลว่าจำหน่ายแล้ว)";
+    }
+    renderTable();
+  } catch (e) {
+    $("srcInfo").textContent = "";
+    $("srcError").textContent = "อ่านไฟล์ไม่สำเร็จ: " + e.message;
+  }
+  $("fileExcel").value = "";
+});
+
+// ---------- run ----------
+
+async function startRun() {
+  $("runError").textContent = "";
+  const sel = selectedPatients();
+  if (!sel.length) {
+    $("runError").textContent = wardFilter
+      ? "ยังไม่ได้เลือกผู้ป่วย — ติ๊กเลือกในตารางก่อน"
+      : "ยังไม่ได้เลือก ward — เลือกจากช่อง \"แสดง ward\" ก่อน แล้วติ๊กคนที่จะคีย์";
+    return;
+  }
+  const dry = $("chkDry").checked;
+  // บอก ward ในกล่องยืนยันด้วย — คนใช้งานคีย์ทีละตึก ต้องเห็นชัดว่ารอบนี้คือตึกไหน
+  const wards = [...new Set(sel.map(p => String(p.ward_name || p.ward || "").trim() || NO_WARD))];
+  const scope = wards.length === 1 ? `${wards[0]} จำนวน ${sel.length} คน`
+    : `${sel.length} คน จาก ${wards.length} ward`;
+  const msg = dry
+    ? `รันโหมดทดสอบ ${scope} (ไม่เพิ่มยา/ไม่บันทึก) ?`
+    : `⚠ จะคีย์ Add ยา continue + บันทึก (F9) จริง\n${scope}\n\nตรวจรายชื่อแล้วใช่ไหม?`;
+  if (!confirm(msg)) return;
+  $("btnRun").disabled = true;   // กันกดซ้ำระหว่างรอเซิร์ฟเวอร์ตอบ
+  try {
+    const r = await fetch("/api/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patients: sel, dry_run: dry, source })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    watchRun(j.run_id);
+  } catch (e) {
+    $("btnRun").disabled = false;
+    $("runError").textContent = "เริ่มงานไม่สำเร็จ: " + e.message;
+  }
+}
+$("btnRun").addEventListener("click", startRun);
+
+$("btnStop").addEventListener("click", async () => {
+  if (!confirm("หยุดงานหลังจบคนปัจจุบัน ?")) return;
+  $("btnStop").disabled = true;
+  try {
+    const r = await fetch("/api/stop", { method: "POST" });
+    if (!r.ok) throw new Error(r.statusText);
+    stopRequested = true;
+    $("btnStop").textContent = "■ สั่งหยุดแล้ว";
+  } catch (e) {
+    $("btnStop").disabled = false;
+    $("runError").textContent = "สั่งหยุดไม่สำเร็จ: " + e.message;
+  }
+});
+
+function watchRun(runId) {
+  watchRunId = runId; lastLogId = 0; stopRequested = false;
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  $("liveLog").innerHTML = "";
+  $("progWrap").style.display = "";
+  $("btnRun").disabled = true;
+  $("btnStop").disabled = false;
+  $("btnStop").textContent = "■ หยุด";
+  $("btnStop").style.display = "";
+  poll();
+  pollTimer = setInterval(poll, 1000);
+}
+
+function setModeBanner(dryRun, running) {
+  const b = $("modeBanner");
+  if (dryRun) {
+    b.textContent = "🧪 โหมดทดสอบ — ไม่มีการเพิ่มยาหรือบันทึกใด ๆ ใน HosXP";
+    b.style.background = "#eff6ff"; b.style.borderColor = "#bfdbfe"; b.style.color = "#1e40af";
+  } else {
+    b.textContent = (running ? "⚠ กำลังคีย์ยาจริงและบันทึกลง HosXP" : "⚠ รอบนี้เป็นการคีย์ยาจริง")
+      + " — ห้ามแตะเมาส์/คีย์บอร์ด";
+    b.style.background = "#fef2f2"; b.style.borderColor = "#fecaca"; b.style.color = "#991b1b";
+  }
+}
+
+function showElevation(st) {
+  const w = $("elevWarn");
+  if (st.blocked) {
+    w.textContent = "⛔ " + st.blocked;
+    w.style.display = "";
+    $("btnRun").disabled = true;
+  } else if (st.elevated === false) {
+    w.textContent = "⛔ " + (st.elevation_help || "ต้องรันด้วยสิทธิ์ผู้ดูแลระบบ");
+    w.style.display = "";
+    $("btnRun").disabled = true;
+  } else if (st.elevated === true) {
+    w.style.display = "none";
+  }
+}
+
+async function poll() {
+  if (pollBusy) return;   // กันโพลซ้อนกันจน log ซ้ำบรรทัด
+  pollBusy = true;
+  try {
+    const st = await (await fetch("/api/status")).json();
+    showElevation(st);
+    const running = st.running && st.run_id === watchRunId;
+    // ซิงก์ช่องโหมดกับความจริงฝั่งเซิร์ฟเวอร์ — กันเข้าใจผิดว่ารอบนี้เป็นแค่ทดสอบ
+    if (running) $("chkDry").checked = !!st.dry_run;
+    $("chkDry").disabled = running;
+    setModeBanner(!!st.dry_run, running);
+
+    const total = st.total || 0, done = st.done || 0;
+    $("progBar").style.width = total ? Math.round(100 * done / total) + "%" : "0%";
+    $("progText").textContent =
+      `คืบหน้า ${done}/${total} — สำเร็จ ${st.ok || 0} · พลาด ${st.fail || 0} · ข้าม ${st.skip || 0}`;
+    $("curPatient").textContent = st.current ? `กำลังคีย์: AN ${st.current.an} ${st.current.ptname}` : "";
+    if (running) {
+      $("runPhase").textContent = (stopRequested || st.stop_requested)
+        ? "สั่งหยุดแล้ว — รอจบคนปัจจุบัน..."
+        : (st.phase === "connect" ? "กำลังเชื่อม HosXP..." : "กำลังทำงาน...");
+    }
+
+    if (watchRunId) {
+      const lr = await (await fetch(`/api/runs/${watchRunId}/logs?after=${lastLogId}`)).json();
+      for (const lg of lr.logs) {
+        lastLogId = Math.max(lastLogId, lg.id);
+        const line = document.createElement("div");
+        line.className = lg.status;
+        const who = lg.an ? `[AN ${lg.an}] ` : "";
+        line.textContent = `${lg.created_at.slice(11)} ${who}${lg.message}`;
+        $("liveLog").appendChild(line);
+      }
+      if (lr.logs.length) $("liveLog").scrollTop = $("liveLog").scrollHeight;
+    }
+
+    if (!running) {
+      clearInterval(pollTimer); pollTimer = null;
+      $("btnRun").disabled = (st.elevated === false) || !!st.blocked;
+      $("btnStop").style.display = "none";
+      $("chkDry").disabled = false;
+      if (st.run && st.run.status) {
+        const labels = { done: "จบงานเรียบร้อย ✅", cancelled: "หยุดโดยผู้ใช้ ■", error: "จบด้วยข้อผิดพลาด ⚠" };
+        $("runPhase").textContent = (labels[st.run.status] || st.run.status)
+          + (st.run.message ? " — " + st.run.message : "");
+      }
+    }
+  } catch (e) { /* โพลรอบถัดไป */ }
+  finally { pollBusy = false; }
+}
+
+// เปิดหน้าใหม่: เช็คสิทธิ์ และถ้ามีงานค้างรันอยู่ให้เกาะดูต่อ
+(async () => {
+  try {
+    const st = await (await fetch("/api/status")).json();
+    showElevation(st);
+    if (st.running && st.run_id) watchRun(st.run_id);
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

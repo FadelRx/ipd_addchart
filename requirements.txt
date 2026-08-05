@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pywinauto>=0.6.9
+PyMySQL>=1.1
+openpyxl>=3.1
+python-multipart>=0.0.9

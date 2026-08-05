@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPDaddChart — ประวัติการรัน</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>📜 ประวัติการรัน</h1>
+  <nav><a href="/">หน้าหลัก</a><a href="/settings">ตั้งค่า</a></nav>
+</header>
+<main>
+
+<div class="card">
+  <h2>รอบการรันทั้งหมด</h2>
+  <div class="tablewrap">
+    <table id="runsTable">
+      <thead><tr>
+        <th>#</th><th>เริ่ม</th><th>จบ</th><th>โหมด</th><th>แหล่งข้อมูล</th>
+        <th>ผู้รัน</th><th>เครื่อง</th><th>สำเร็จ</th><th>พลาด</th><th>ข้าม</th><th>ทั้งหมด</th><th>สถานะ</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="error" id="loadErr"></div>
+  <div class="muted" style="margin-top:8px">คลิกที่แถวเพื่อดู log ทั้งหมดของรอบนั้น</div>
+</div>
+
+<div class="card" id="detailCard" style="display:none">
+  <h2 id="detailTitle">รายละเอียด</h2>
+  <div class="logbox" id="detailLog"></div>
+</div>
+
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const statusBadge = (s) => ({
+  done: '<span class="badge done">เสร็จ</span>',
+  running: '<span class="badge wait">กำลังรัน</span>',
+  cancelled: '<span class="badge skip">หยุดกลางคัน</span>',
+  error: '<span class="badge fail">ผิดพลาด</span>',
+}[s] || esc(s));
+
+async function loadRuns() {
+  $("loadErr").textContent = "";
+  let j;
+  try {
+    const res = await fetch("/api/runs?limit=100");
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    j = await res.json();
+  } catch (e) {
+    $("loadErr").textContent = "โหลดประวัติการรันไม่สำเร็จ: " + e.message + " — ลองรีเฟรชหน้านี้";
+    return;
+  }
+  const tb = $("runsTable").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const r of j.runs) {
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    tr.innerHTML =
+      `<td>${r.id}</td><td>${esc(r.started_at)}</td><td>${esc(r.finished_at || "")}</td>` +
+      `<td>${r.dry_run ? "ทดสอบ" : "จริง"}</td><td>${esc(r.source || "")}</td>` +
+      `<td>${esc(r.operator || "")}</td><td>${esc(r.host || "")}</td>` +
+      `<td>${r.ok_count}</td><td>${r.fail_count}</td><td>${r.skip_count}</td><td>${r.total}</td>` +
+      `<td>${statusBadge(r.status)}</td>`;
+    tr.addEventListener("click", () => showDetail(r));
+    tb.appendChild(tr);
+  }
+}
+
+async function showDetail(run) {
+  $("detailCard").style.display = "";
+  $("detailTitle").textContent = `รอบ #${run.id} — ${run.started_at} ${run.message ? "· " + run.message : ""}`;
+  const box = $("detailLog");
+  box.innerHTML = "";
+  $("detailCard").scrollIntoView({ behavior: "smooth" });
+  // ดึงเป็นหน้า ๆ จนหมด — API จำกัดครั้งละ 500 บรรทัด ถ้าดึงรอบเดียวจะเห็น log ไม่ครบ
+  let after = 0;
+  try {
+    while (true) {
+      const res = await fetch(`/api/runs/${run.id}/logs?after=${after}`);
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      const j = await res.json();
+      if (!j.logs.length) break;
+      for (const lg of j.logs) {
+        after = Math.max(after, lg.id);
+        const line = document.createElement("div");
+        line.className = lg.status;
+        const who = lg.an ? `[AN ${lg.an} ${lg.ptname || ""}] ` : "";
+        line.textContent = `${lg.created_at} ${who}${lg.message}`;
+        box.appendChild(line);
+      }
+    }
+  } catch (e) {
+    const line = document.createElement("div");
+    line.className = "fail";
+    line.textContent = "โหลด log ไม่ครบ: " + e.message;
+    box.appendChild(line);
+  }
+}
+
+loadRuns();
+</script>
+</body>
+</html>
