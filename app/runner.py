@@ -25,6 +25,35 @@ class JobManager:
         with self._lock:
             return self._blocked
 
+    def unblock(self) -> None:
+        """ปลดล็อกหลังเภสัชกรตรวจหน้าจอ HosXP แล้ว — ใช้แทนการปิดโปรแกรมแล้วเปิดใหม่
+
+        เหตุผลเดิมที่ต้องปิดโปรแกรมคือ "คำสั่งค้าง": ตอนขั้นตอนหนึ่ง timeout
+        เธรดที่ค้างยังทำงานต่อ และอาจไปคลิก/พิมพ์ถึง HosXP ทีหลัง
+        ถ้าตอนนั้นงานใหม่กำลังคีย์คนอื่นอยู่ = คีย์ผิดคน
+        จึงปลดให้เฉพาะตอนที่เธรดค้างตายหมดแล้วจริง ๆ เท่านั้น (ไม่ใช่แค่ผู้ใช้กดยืนยัน)
+        เซสชันใหม่ถูกสร้างใหม่ทุกครั้งที่เริ่มงาน ธง poisoned ของเซสชันเก่าจึงไม่ตกทอดมา
+        """
+        with self._lock:
+            if self._state.get("running"):
+                raise RuntimeError("มีงานกำลังรันอยู่ — หยุดงานก่อนแล้วค่อยปลดล็อก")
+            if not self._blocked:
+                return
+        try:
+            from .robot.session import orphan_threads_alive
+
+            stuck = orphan_threads_alive()
+        except Exception:
+            stuck = 0  # นำเข้าโมดูลโรบอทไม่ได้ = โรบอทไม่เคยรัน จึงไม่มีคำสั่งค้าง
+        if stuck:
+            raise RuntimeError(
+                f"ยังมีคำสั่งค้างอยู่ {stuck} รายการที่อาจไปถึง HosXP ทีหลัง — ปลดล็อกไม่ได้ตอนนี้ "
+                "รอสักครู่แล้วกดใหม่ ถ้ายังไม่หายให้ปิดโปรแกรมนี้แล้วเปิดใหม่"
+            )
+        with self._lock:
+            self._blocked = ""
+            self._state["blocked"] = ""
+
     # ---------- public ----------
 
     def is_running(self) -> bool:
@@ -282,8 +311,9 @@ class JobManager:
                     final_status, final_msg = "error", str(e)
                     safe_log("timeout", "fail", str(e))
                     self._block(
-                        "เคยมีขั้นตอนค้างระหว่างสั่งงาน HosXP — ปิดโปรแกรมนี้แล้วเปิดใหม่ "
-                        "และตรวจหน้าจอ HosXP ก่อนรันต่อ"
+                        "เคยมีขั้นตอนค้างระหว่างสั่งงาน HosXP — ไปตรวจหน้าจอ HosXP ให้เรียบร้อยก่อน "
+                        "(ปิด dialog ที่ค้าง / ดูว่ามีรายการยาค้างไม่ได้บันทึกหรือไม่) "
+                        "แล้วกดปุ่ม 'ตรวจหน้าจอ HosXP แล้ว — ปลดล็อก' ด้านล่างนี้เพื่อรันต่อ"
                     )
                     break
                 except ConfigError as e:

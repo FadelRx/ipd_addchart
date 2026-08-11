@@ -71,12 +71,35 @@ class PopupReviewPatient(RobotError):
     """
 
 
+_orphans_lock = threading.Lock()
+_orphan_threads = []  # เธรดที่หมดเวลาไปแล้วแต่ยังไม่ตาย — อาจไปคลิก/พิมพ์ใส่ HosXP ทีหลัง
+
+
+def _remember_orphan(th) -> None:
+    with _orphans_lock:
+        _orphan_threads[:] = [t for t in _orphan_threads if t.is_alive()]
+        _orphan_threads.append(th)
+
+
+def orphan_threads_alive() -> int:
+    """นับคำสั่งค้างที่ยังมีชีวิตอยู่ — ใช้ตัดสินว่าปลดล็อกให้รันงานใหม่ได้หรือยัง
+
+    อันตรายของ StepTimeout ไม่ใช่ตัว timeout เอง แต่คือเธรดเก่าที่ยังค้างอยู่
+    ถ้ามันไปคลิก/พิมพ์ถึง HosXP ตอนที่งานใหม่กำลังคีย์คนอื่นอยู่ = คีย์ผิดคน
+    เมื่อเธรดเหล่านี้ตายหมดแล้ว ความเสี่ยงนั้นก็หมดไปด้วย
+    """
+    with _orphans_lock:
+        _orphan_threads[:] = [t for t in _orphan_threads if t.is_alive()]
+        return len(_orphan_threads)
+
+
 def with_timeout(fn, seconds: float, what: str):
     """เรียกฟังก์ชันโดยมีเพดานเวลา — กัน pywinauto ค้างถาวรตอน HosXP ไม่ตอบ
     (การอ่านข้อความ control ใช้ SendMessage ซึ่งไม่มี timeout ในตัว)
 
     หมายเหตุสำคัญ: ถ้าหมดเวลา เธรดเบื้องหลังยังทำงานต่อและอาจไปคลิก/พิมพ์ใส่ HosXP ทีหลังได้
     ผู้เรียกจึงต้องถือว่าเซสชันนี้ใช้ต่อไม่ได้แล้ว (ดู HosxpSession.poisoned)
+    เธรดที่ค้างจะถูกจดไว้ที่ _orphan_threads เพื่อให้รู้ทีหลังว่าปลอดภัยพอจะรันงานใหม่หรือยัง
     """
     box = {}
 
@@ -90,9 +113,10 @@ def with_timeout(fn, seconds: float, what: str):
     th.start()
     th.join(seconds)
     if th.is_alive():
+        _remember_orphan(th)
         raise StepTimeout(
             f"ขั้นตอน '{what}' ค้างเกิน {int(seconds)} วินาที — HosXP อาจไม่ตอบสนอง "
-            "หรือมีหน้าต่างซ่อนรออยู่ ต้องปิดโปรแกรมนี้แล้วเปิดใหม่ก่อนรันต่อ"
+            "หรือมีหน้าต่างซ่อนรออยู่ ต้องตรวจหน้าจอ HosXP แล้วกดปลดล็อกในหน้าเว็บก่อนรันต่อ"
         )
     if "error" in box:
         raise box["error"]
@@ -347,7 +371,7 @@ class HosxpSession:
         if self.poisoned:
             raise RobotError(
                 "เซสชันนี้เคยค้างมาก่อน จึงใช้ต่อไม่ได้ (อาจมีคำสั่งค้างที่ยังไม่ถึง HosXP) "
-                "— ปิดโปรแกรมนี้แล้วเปิดใหม่ ตรวจหน้าจอ HosXP ก่อนรันต่อ"
+                "— ตรวจหน้าจอ HosXP แล้วกดปลดล็อกในหน้าเว็บก่อนรันต่อ"
             )
 
     def timed(self, fn, seconds: float, what: str):
@@ -574,21 +598,25 @@ class HosxpSession:
                 return None
             time.sleep(poll)
 
-    def ensure_ipd_form(self):
-        """คืน wrapper ของ TIPDRxForm — ต้องเปิดค้างไว้ในโปรแกรมก่อน"""
+    def ensure_ipd_form(self, sweep: bool = True):
+        """คืน wrapper ของ TIPDRxForm — ต้องเปิดค้างไว้ในโปรแกรมก่อน
+
+        หาไม่เจอครั้งแรกมักไม่ได้แปลว่าไม่ได้เปิดหน้านี้ แต่แปลว่ามีหน้าต่างอื่นลอยทับอยู่
+        (บทเรียนจริง 10 ส.ค.: หน้าต่างเตือนแพ้ยาค้างบานเดียว ทำให้คนไข้ 3 คนถัดไปพังต่อกัน
+         โดยข้อความ error บอกแค่ 'ไม่พบหน้า IPD' ซึ่งชี้ไปผิดทาง) จึงกวาดหน้าต่างก่อนแล้วลองใหม่
+        """
         ipd_spec = self.robot_cfg.get("ipd_form", {})
-        found = self.find_all(
-            self.main,
-            {"class_name": ipd_spec.get("class_name"), "title_re": ipd_spec.get("title_re")},
-            "หน้า IPD Medication Profile",
-            timeout=self.t("find_window_timeout", 15) * 2,
-        )
+        spec = {"class_name": ipd_spec.get("class_name"), "title_re": ipd_spec.get("title_re")}
+        timeout = self.t("find_window_timeout", 15) * 2
+        found = self.find_all(self.main, spec, "หน้า IPD Medication Profile", timeout=timeout)
+        if not found and sweep and self.sweep_blocking_windows("เคลียร์หน้าจอ"):
+            found = self.find_all(self.main, spec, "หน้า IPD Medication Profile", timeout=timeout)
         if len(found) > 1:
             raise RobotError("พบหน้า IPD Medication Profile มากกว่าหนึ่งบาน — ปิดให้เหลือบานเดียวก่อนเริ่ม")
         if not found:
             raise RobotError(
                 "ไม่พบหน้า IPD Medication Profile — เปิดเมนูนี้ใน HosXP ค้างไว้หนึ่งครั้ง แล้วกดเริ่มใหม่ "
-                "(หน้าต่างนี้ใช้ซ้ำได้ทุกคน ไม่ต้องปิดระหว่างวัน)"
+                "(หน้าต่างนี้ใช้ซ้ำได้ทุกคน ไม่ต้องปิดระหว่างวัน)" + self.describe_blocking()
             )
         return found[0]
 
@@ -959,6 +987,91 @@ class HosxpSession:
 
         return self.timed(work, timeout, f"ค้นหาหน้าต่าง {class_name or class_re}") or []
 
+    def hosxp_forms(self, timeout: float = 12.0) -> list:
+        """คืน (handle, คลาส, หัวเรื่อง) ของ "ฟอร์ม" ทุกบานของ HosXP ที่มองเห็นอยู่ตอนนี้
+
+        ใช้หาว่ามีหน้าต่างอะไรลอยทับอยู่บ้าง — ทั้งตอนกวาดปิด และตอนรายงานว่าอะไรขวางอยู่
+        กรองเฉพาะคลาสที่ลงท้ายด้วย Form (มาตรฐานการตั้งชื่อของ Delphi) จึงไม่ไปโดน control ย่อยเป็นพัน ๆ ตัว
+        """
+
+        def work():
+            from pywinauto.findwindows import find_elements
+
+            try:
+                els = find_elements(class_name_re=r"^T.*Form$", process=self.pid, top_level_only=False)
+            except Exception:
+                els = []
+            out = []
+            for e in els:
+                try:
+                    h = int(e.handle)
+                except Exception:
+                    continue
+                if not winapi.is_visible(h) or h == self.main_handle:
+                    continue
+                out.append((h, winapi.class_name_of(h), safe_text(h, 600) or ""))
+            return out
+
+        return self.timed(work, timeout, "ไล่ดูหน้าต่างของ HosXP") or []
+
+    def blocking_windows(self, exclude: set = None) -> list:
+        """หน้าต่างที่ไม่ใช่หน้าหลักและไม่ใช่หน้า IPD — คือตัวที่อาจลอยทับปุ่มที่เราจะกด"""
+        ipd_cls = (self.robot_cfg.get("ipd_form", {}) or {}).get("class_name") or ""
+        skip = set(exclude or ())
+        out = []
+        for h, cls, title in self.hosxp_forms():
+            if h in skip or (ipd_cls and cls == ipd_cls):
+                continue
+            out.append((h, cls, title))
+        return out
+
+    def sweep_blocking_windows(self, step: str) -> int:
+        """กวาดปิดหน้าต่างแจ้งเตือนที่ลอยทับอยู่ แล้วคืนจำนวนที่ปิดได้
+
+        ปิดให้เฉพาะหน้าต่างที่ "ปุ่มของมันเป็นการปิด/รับทราบเท่านั้น" เช่น ปิด / รับทราบ / Close
+        เพราะปุ่มพวกนี้ไม่ได้ตัดสินใจอะไรแทนคน แค่ปิดหน้าต่างทิ้ง
+
+        จงใจไม่แตะปุ่มอย่าง ตกลง/OK/Yes เพราะในกล่องยืนยันมันแปลว่า "ทำเลย"
+        (เช่น 'ต้องการลบใบสั่งยาหรือไม่ [ตกลง]') — กล่องพวกนั้นต้องมีกฎเจาะจงเท่านั้น
+        และไม่แตะ checkbox ใด ๆ ทั้งสิ้น โดยเฉพาะ 'ไม่ต้องเตือนเรื่องนี้อีก'
+        """
+        cfg = self.robot_cfg.get("popups", {}) or {}
+        if not cfg.get("sweep_unknown_windows", True):
+            return 0
+        words = cfg.get("sweep_close_buttons") or ["ปิด", "รับทราบ", "Close"]
+        rx = re.compile(r"^\s*(" + "|".join(re.escape(w) for w in words) + r")\s*$", re.IGNORECASE)
+
+        closed = 0
+        for h, cls, title in self.blocking_windows():
+            btn = None
+            for k in child_handles(h, limit=400):
+                txt = (safe_text(k, 600) or "").strip()
+                if txt and rx.match(txt):
+                    btn = txt
+                    break
+            if btn is None:
+                continue  # ไม่มีปุ่มปิดที่ปลอดภัย = ไม่ใช่หน้าต่างแจ้งเตือนธรรมดา ปล่อยให้คนจัดการ
+            # ไม่บันทึกเนื้อหาในหน้าต่างลง log (อาจเป็นข้อมูลทางคลินิกของคนไข้) บอกแค่คลาสกับปุ่มที่กด
+            self.log(step, "info", f"พบหน้าต่าง [{cls}] ลอยทับอยู่ — กดปุ่ม '{btn}' ปิดให้แล้วทำงานต่อ "
+                                   + self.keep_evidence(h, f"หน้าต่าง {cls} ที่กวาดปิดอัตโนมัติ", kind="struct"))
+            try:
+                self.click_dialog_button(h, {"title_re": rx.pattern}, f"ปิดหน้าต่าง {cls}")
+                closed += 1
+            except RobotError as e:
+                self.log(step, "retry", f"ปิดหน้าต่าง [{cls}] ไม่สำเร็จ: {e}")
+        return closed
+
+    def describe_blocking(self) -> str:
+        """ข้อความสั้น ๆ บอกว่าตอนนี้มีหน้าต่างอะไรลอยทับอยู่ — ใช้ต่อท้ายข้อความ error ให้รู้ต้นเหตุทันที"""
+        try:
+            wins = self.blocking_windows()
+        except Exception:
+            return ""
+        if not wins:
+            return " (ตรวจแล้วไม่มีหน้าต่างอื่นลอยทับอยู่)"
+        names = ", ".join(f"[{cls}]{(' ' + title[:40]) if title else ''}" for _h, cls, title in wins[:5])
+        return f" — ขณะนี้มีหน้าต่างเหล่านี้เปิดค้างอยู่: {names}"
+
     def handle_window_rules(self, step: str) -> int:
         """จัดการหน้าต่างที่รู้จักตามชื่อคลาส (robot.popups.rules ที่มี class_name)
         คืนจำนวนหน้าต่างที่จัดการไป"""
@@ -1000,6 +1113,9 @@ class HosxpSession:
         self.guard()
         # จัดการหน้าต่างที่รู้จักตามคลาสก่อน (พวกที่ไม่ใช่ dialog และอาจไม่ได้อยู่หน้าสุด)
         self.handle_window_rules(step)
+        # แล้วกวาดหน้าต่างแจ้งเตือนที่ยังไม่รู้จักแต่มีปุ่มปิดชัดเจน
+        # (ถ้าไม่กวาด หน้าต่างเดียวที่ค้างจะทำให้คนไข้ที่เหลือทั้งรอบพังต่อกันเป็นทอด ๆ)
+        self.sweep_blocking_windows(step)
         seen = []
         idle = 0
         for _ in range(max(1, int(max_count))):

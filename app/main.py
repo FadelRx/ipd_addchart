@@ -231,6 +231,17 @@ def api_stop():
     return {"ok": True}
 
 
+@app.post("/api/unblock")
+def api_unblock():
+    """ปลดล็อกหลังงานหยุดด้วยขั้นตอนค้าง — ให้เลือกคนไข้แล้วกดรันใหม่ได้โดยไม่ต้องปิดโปรแกรม
+    ปลดให้เฉพาะตอนไม่มีคำสั่งค้างเหลืออยู่แล้วเท่านั้น (ดูเหตุผลใน JobManager.unblock)"""
+    try:
+        manager.unblock()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "blocked": manager.blocked}
+
+
 @app.get("/api/status")
 def api_status():
     st = manager.status()

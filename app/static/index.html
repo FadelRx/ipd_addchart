@@ -13,7 +13,13 @@
 </header>
 <main>
 
-<div class="notice" id="elevWarn" style="display:none;background:#fef2f2;border-color:#fecaca;color:#991b1b"></div>
+<div class="notice" id="elevWarn" style="display:none;background:#fef2f2;border-color:#fecaca;color:#991b1b">
+  <span id="elevMsg"></span>
+  <div class="row" id="unblockRow" style="display:none;margin-top:8px">
+    <button id="btnUnblock">✔ ตรวจหน้าจอ HosXP แล้ว — ปลดล็อกเพื่อรันต่อ</button>
+    <span class="muted" id="unblockNote"></span>
+  </div>
+</div>
 
 <div class="card">
   <h2>1) รายชื่อผู้ป่วยที่ admit อยู่</h2>
@@ -450,18 +456,40 @@ function setModeBanner(dryRun, running) {
 
 function showElevation(st) {
   const w = $("elevWarn");
-  if (st.blocked) {
-    w.textContent = "⛔ " + st.blocked;
+  const blocked = !!st.blocked;
+  // ปุ่มปลดล็อกโผล่เฉพาะตอนถูกล็อกจากขั้นตอนค้าง — สิทธิ์แอดมินไม่พอ ปลดเองไม่ได้
+  $("unblockRow").style.display = blocked ? "" : "none";
+  if (blocked) {
+    $("elevMsg").textContent = "⛔ " + st.blocked;
     w.style.display = "";
-    $("btnRun").disabled = true;
   } else if (st.elevated === false) {
-    w.textContent = "⛔ " + (st.elevation_help || "ต้องรันด้วยสิทธิ์ผู้ดูแลระบบ");
+    $("elevMsg").textContent = "⛔ " + (st.elevation_help || "ต้องรันด้วยสิทธิ์ผู้ดูแลระบบ");
     w.style.display = "";
-    $("btnRun").disabled = true;
   } else if (st.elevated === true) {
     w.style.display = "none";
   }
+  // ปลดล็อกแล้วต้องกดเริ่มคีย์ได้ทันที ไม่ต้องรอโพลรอบถัดไป (โพลหยุดไปแล้วตอนงานจบ)
+  if (!st.running) $("btnRun").disabled = blocked || st.elevated === false;
 }
+
+$("btnUnblock").addEventListener("click", async () => {
+  if (!confirm("ยืนยันว่าตรวจหน้าจอ HosXP แล้ว: ไม่มี dialog ค้าง และไม่มีรายการยาที่ค้างไม่ได้บันทึก ?")) return;
+  $("btnUnblock").disabled = true;
+  $("unblockNote").textContent = "";
+  try {
+    const r = await fetch("/api/unblock", { method: "POST" });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    const st = await (await fetch("/api/status")).json();
+    showElevation(st);
+    $("runError").textContent = "";
+    $("runPhase").textContent = "ปลดล็อกแล้ว — เลือกผู้ป่วยแล้วกดเริ่มคีย์ได้เลย";
+  } catch (e) {
+    $("unblockNote").textContent = "ปลดล็อกไม่สำเร็จ: " + e.message;
+  } finally {
+    $("btnUnblock").disabled = false;
+  }
+});
 
 async function poll() {
   if (pollBusy) return;   // กันโพลซ้อนกันจน log ซ้ำบรรทัด

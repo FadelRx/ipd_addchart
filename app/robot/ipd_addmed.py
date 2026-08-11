@@ -113,7 +113,7 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
             raise StepFailed(
                 "ไม่พบกรอบ 'เลือกคนไข้' ในหน้า IPD Medication Profile "
                 "— หน้าจอยังค้างอยู่ที่รายการยาของคนก่อนหน้า และกดปุ่ม 'เลือกใหม่' กลับมาไม่ได้ "
-                "(ตรวจ selector ที่ ipd_form.select_new_button)"
+                "(ตรวจ selector ที่ ipd_form.select_new_button)" + session.describe_blocking()
             )
 
     edit_class = ipd_spec.get("patient_edit_class", "TdxEdit")
