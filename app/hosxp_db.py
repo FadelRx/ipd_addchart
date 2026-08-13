@@ -15,6 +15,7 @@ SELECT
     i.hn,
     i.ward,
     IFNULL(w.name, '') AS ward_name,
+    IFNULL(b.bedno, '') AS bedno,
     CONCAT(IFNULL(p.pname,''), IFNULL(p.fname,''), ' ', IFNULL(p.lname,'')) AS ptname,
     IFNULL(p.fname, '') AS fname,
     IFNULL(p.lname, '') AS lname,
@@ -27,6 +28,8 @@ SELECT
 FROM ipt i
 LEFT JOIN ward w ON w.ward = i.ward
 LEFT JOIN patient p ON p.hn = i.hn
+-- เลขเตียงปัจจุบัน: แถวใน iptadm ที่ยังไม่ย้ายออก (บางตึกไม่ได้กำหนดเตียง จะได้ค่าว่าง)
+LEFT JOIN iptadm b ON b.an = i.an AND (b.outdate IS NULL OR b.outdate = '0000-00-00')
 WHERE (i.dchdate IS NULL OR i.dchdate = '0000-00-00')
 ORDER BY ward_name, i.ward, i.an
 """
@@ -52,29 +55,28 @@ DROP_REASON_LABELS = {
 # นับ "รายการยา continue" ของแต่ละ AN — คือสิ่งที่ปุ่ม Add Chart F5 จะยกมาให้
 # ถ้านับได้ 0 แปลว่ากดไปก็จะเจอ "No Item" (ไม่มีอะไรถูกบันทึก)
 #
-# สองจุดที่ต้องระวัง ไม่งั้นเลขจะหลอก:
-# 1. opitemrece เก็บยาปนกับเวชภัณฑ์/บริการ (Echocardiogram, EKG monitor, ค่าบริการห้อง ICU)
-#    ของพวกนี้ icode ขึ้นต้นด้วย 3 และไม่มีใน drugitems — ต้อง JOIN drugitems เพื่อเอาเฉพาะยา
-# 2. ห้ามใช้ MAX(rxdate) เฉย ๆ เป็นวันของชาร์ต เพราะคนไข้จำนวนมากมีแถว "ค่าบริการรายวัน"
-#    ของวันนี้แล้วแต่ยังไม่มีชาร์ตยาของวันนี้ (นั่นแหละคือเหตุผลที่ต้องรันโปรแกรมนี้)
-#    ถ้านับจากวันล่าสุดจะได้ 0 ทั้งที่จริง ๆ มียา continue ค้างอยู่จากเมื่อวาน
-#    จึงต้องหา "วันล่าสุดที่มีรายการยา" แล้วนับยาของวันนั้น
+# ต้องอ่านจาก medplan_ipd = "แผนการใช้ยาของผู้ป่วยใน" ซึ่งเป็นตัวเดียวกับที่ Add Chart F5 ยกมา
+#   orderstatus = 'C' (Continue) คือยาต่อเนื่องที่ถูกยกมาทุกวัน
+#   orderstatus = 'S' (Stat) คือยาสั่งครั้งเดียว ไม่ถูกยกมา
+#   offdate     = วันที่สั่งหยุดยา ถ้ายังไม่ถึงวันนั้น (หรือว่าง) แปลว่ายังใช้อยู่
+#
+# เคยใช้ opitemrece แล้วเลขเพี้ยนทั้งขึ้นและลง (แก้ 10 ส.ค. 2569):
+#   opitemrece คือรายการ "จ่ายยา/คิดเงิน" ไม่ใช่แผนการใช้ยา คนไข้ที่มีหลายใบสั่งในวันเดียว
+#   จะถูกนับซ้ำ (มี 3 แสดง 7) ส่วนคนที่ชาร์ตล่าสุดมีแค่บางรายการก็นับขาด (มี 3 แสดง 1)
+#
+# พิสูจน์แล้วกับ AN 690017875: medplan_ipd orderstatus='C' ได้ 5 ตัว
+# (MetFORMIN, GLIPIZIDE, Lasix, Aldactone, Carvedilol) ตรงกับที่เห็นบนหน้าจอ HosXP เป๊ะ
+# ส่วนแถว 'S' (NSS, LEVOPHED) ไม่ถูกยกมาจริงตามที่เห็นบนหน้าจอ
 SQL_DRUG_COUNTS = """
 SELECT
-    o.an,
-    DATE_FORMAT(o.rxdate, '%%Y-%%m-%%d') AS rx_date,
-    COUNT(*) AS drug_count
-FROM opitemrece o
-JOIN drugitems d ON d.icode = o.icode
-JOIN (
-    SELECT o2.an, MAX(o2.rxdate) AS mx
-    FROM opitemrece o2
-    JOIN drugitems d2 ON d2.icode = o2.icode
-    WHERE o2.an IN %(ans)s AND o2.rxdate BETWEEN %(since)s AND %(today)s
-    GROUP BY o2.an
-) t ON t.an = o.an AND t.mx = o.rxdate
-WHERE o.an IN %(ans)s AND o.rxdate BETWEEN %(since)s AND %(today)s
-GROUP BY o.an, o.rxdate
+    m.an,
+    COUNT(*) AS drug_count,
+    DATE_FORMAT(MAX(m.orderdate), '%%Y-%%m-%%d') AS rx_date
+FROM medplan_ipd m
+WHERE m.an IN %(ans)s
+  AND m.orderstatus = 'C'
+  AND (m.offdate IS NULL OR m.offdate = '0000-00-00' OR DATE(m.offdate) > %(today)s)
+GROUP BY m.an
 """
 
 AN_CHUNK = 500  # กัน SQL ยาวเกินไปเมื่อโรงพยาบาลใหญ่มีคนไข้ในหลักพัน
@@ -107,19 +109,15 @@ def fetch_drug_counts(cfg: dict, ans: list, today: str = "") -> dict:
     if not ans:
         return {}
     today = today or _today_str()
-    days = int(cfg.get("drug_lookback_days", 30) or 30)
-
-    from datetime import datetime, timedelta
-
-    since = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
-
+    # หมายเหตุ: ไม่ต้องใช้ช่วงวันย้อนหลังแล้ว เพราะ medplan_ipd เก็บ "แผนที่ยังใช้อยู่" ของ AN นั้นตรง ๆ
+    # (ต่างจาก opitemrece เดิมที่ต้องไล่หาวันล่าสุดที่มีรายการยา)
     out = {}
     conn = _connect(cfg)
     try:
         with conn.cursor() as cur:
             for i in range(0, len(ans), AN_CHUNK):
                 chunk = tuple(ans[i : i + AN_CHUNK])
-                cur.execute(SQL_DRUG_COUNTS, {"ans": chunk, "since": since, "today": today})
+                cur.execute(SQL_DRUG_COUNTS, {"ans": chunk, "today": today})
                 for r in cur.fetchall():
                     out[str(r.get("an") or "").strip()] = {
                         "drug_count": int(r.get("drug_count") or 0),
@@ -176,6 +174,24 @@ def _drop_reason(r: dict, f: dict) -> str:
     return ""
 
 
+def _bed_sort_key(bedno) -> str:
+    """คีย์สำหรับเรียงเลขเตียงให้ถูกตามสายตาคน
+
+    เลขเตียงของโรงพยาบาลปนตัวอักษรกับตัวเลข (BH01, 6613, NICU12, MICU01, PD28)
+    ถ้าเรียงแบบข้อความล้วน จะได้ NICU12 มาก่อน NICU2 ซึ่งผิด
+    จึงเติมศูนย์หน้าตัวเลขให้ยาวเท่ากันก่อนเรียง และดันเตียงที่ว่างไปท้ายสุด
+    """
+    import re as _re
+
+    s = str(bedno or "").strip()
+    if not s:
+        return "￿"  # ไม่มีเลขเตียง = ไปท้ายกลุ่ม
+    return "".join(
+        part.rjust(8, "0") if part.isdigit() else part.upper()
+        for part in _re.split(r"(\d+)", s)
+    )
+
+
 def fetch_admitted(cfg: dict, today: str = "", with_stats: bool = False):
     """คืนรายชื่อผู้ป่วยที่ admit อยู่จริง (กรองแถวค้างออกแล้ว)
 
@@ -211,6 +227,8 @@ def fetch_admitted(cfg: dict, today: str = "", with_stats: bool = False):
                 "ward": ward,
                 # ward ที่ไม่มีชื่อในตาราง ward ยังต้องจัดกลุ่มได้ ใช้รหัส ward แทนชื่อ
                 "ward_name": ward_name or ward,
+                "bedno": str(r.get("bedno") or "").strip(),
+                "bed_sort": _bed_sort_key(r.get("bedno")),
                 "ptname": " ".join(str(r.get("ptname") or "").split()),
                 "regdate": str(r.get("regdate") or "").strip(),
                 "los_days": int(los) if los is not None else "",

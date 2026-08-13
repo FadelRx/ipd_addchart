@@ -41,7 +41,7 @@
     </div>
     <div class="tablewrap" id="tableWrap">
       <table id="ptTable">
-        <thead><tr><th></th><th>AN</th><th>HN</th><th>ชื่อ-สกุล</th><th>Ward</th><th>วันนอน</th><th>รายการยา</th><th>สถานะ</th></tr></thead>
+        <thead><tr><th></th><th>เตียง</th><th>AN</th><th>HN</th><th>ชื่อ-สกุล</th><th>Ward</th><th>วันนอน</th><th>รายการยา</th><th>สถานะ</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -108,13 +108,21 @@ function groupByWard() {
   });
   return [...map.entries()]
     .sort((a, b) => (a[0] === NO_WARD) - (b[0] === NO_WARD) || a[0].localeCompare(b[0], "th"))
-    .map(([ward, idx]) => ({ ward, idx }));
+    // เรียงในแต่ละตึกตามเลขเตียง เพื่อให้ไล่คีย์ตรงกับใบรายชื่อที่ปรินต์จากหอผู้ป่วย
+    .map(([ward, idx]) => ({
+      ward,
+      idx: idx.sort((x, y) =>
+        String(patients[x].bed_sort || "￿").localeCompare(String(patients[y].bed_sort || "￿"))),
+    }));
 }
 
 function rowHtml(p, i) {
   const runnable = !!p[patientKey] && !p.needs_review;
   let status;
-  if (p.needs_review) {
+  if (!p.needs_review && !p.done_today && runnable && p.drug_count === 0) {
+    // ไม่มียา continue ให้ยกมา — กดไปก็จะเจอ "No Item" จึงไม่ควรขึ้นว่า "รอคีย์"
+    status = '<span class="badge skip">ไม่มียา</span> <span class="muted">ไม่มีรายการยา continue ให้ยกมา</span>';
+  } else if (p.needs_review) {
     status = `<span class="badge fail">⚠ ต้องตรวจเอง</span> <span class="muted">เคยจบแบบไม่รู้ผลการบันทึก ${esc(p.done_info || "")}</span>` +
       ` <button data-clear="${i}" style="padding:2px 8px;font-size:12px">ตรวจแล้ว ยายังไม่เข้า → ให้ลองใหม่</button>` +
       ` <button data-confirm="${i}" style="padding:2px 8px;font-size:12px">ตรวจแล้ว ยาเข้าแล้ว → ไม่ต้องคีย์ซ้ำ</button>`;
@@ -129,6 +137,7 @@ function rowHtml(p, i) {
   const losCell = (los !== "" && +los > 180)
     ? `<span class="badge skip">${esc(los)} วัน</span>` : esc(los);
   return `<td><input type="checkbox" data-i="${i}" ${isRunnable(p) ? "checked" : ""}></td>` +
+    `<td><b>${esc(p.bedno) || "-"}</b></td>` +
     `<td>${esc(p.an) || "-"}</td><td>${esc(p.hn)}</td><td>${esc(p.ptname)}</td>` +
     `<td>${esc(p.ward_name || p.ward)}</td><td>${losCell}</td><td>${drugCell(p)}</td><td>${status}</td>`;
 }
@@ -181,7 +190,7 @@ function renderTable() {
     const head = document.createElement("tr");
     head.className = "grp";
     head.innerHTML =
-      `<td colspan="8">` +
+      `<td colspan="9">` +
       `<label class="chk"><input type="checkbox" data-ward="${gi}" ${waiting ? "checked" : ""} ${waiting ? "" : "disabled"}>` +
       `<span class="wardname">${esc(g.ward)}</span></label> ` +
       `<span class="muted">${g.idx.length} คน · รอคีย์ ${waiting} คน` +
@@ -491,6 +500,34 @@ $("btnUnblock").addEventListener("click", async () => {
   }
 });
 
+// ตัดให้เหลือแต่ตัวเลขและตัดศูนย์นำหน้า — ต้องให้ผลตรงกับ norm_id() ฝั่ง Python เป๊ะ
+function normId(v) {
+  const d = String(v ?? "").replace(/\D/g, "");
+  return d.replace(/^0+/, "") || (d ? "0" : "");
+}
+
+let lastStatusSig = "";
+
+// อัปเดตสถานะ "ทำแล้ว / ต้องตรวจเอง" ในตารางให้ตรงกับความจริงฝั่งเซิร์ฟเวอร์
+// (เดิมต้องสลับ ward ไปกลับถึงจะเห็นการเปลี่ยนแปลง เพราะตารางถูกวาดครั้งเดียวตอนดึงรายชื่อ)
+async function refreshStatuses() {
+  if (!patients.length) return;
+  const r = await fetch("/api/patients/status");
+  if (!r.ok) return;
+  const s = await r.json();
+  const sig = JSON.stringify(s);
+  if (sig === lastStatusSig) return;    // ไม่มีอะไรเปลี่ยน ไม่ต้องวาดใหม่ให้ตารางกระพริบ
+  lastStatusSig = sig;
+  const doneAn = new Set(s.done_an), doneHn = new Set(s.done_hn);
+  const revAn = new Set(s.review_an), revHn = new Set(s.review_hn);
+  for (const p of patients) {
+    const an = normId(p.an), hn = normId(p.hn);
+    p.done_today = (an && doneAn.has(an)) || (hn && doneHn.has(hn));
+    p.needs_review = (an && revAn.has(an)) || (hn && revHn.has(hn));
+  }
+  renderTable();
+}
+
 async function poll() {
   if (pollBusy) return;   // กันโพลซ้อนกันจน log ซ้ำบรรทัด
   pollBusy = true;
@@ -526,6 +563,9 @@ async function poll() {
       }
       if (lr.logs.length) $("liveLog").scrollTop = $("liveLog").scrollHeight;
     }
+
+    // อัปเดตสถานะในตารางระหว่างรัน จะได้เห็นทีละคนว่าใครเสร็จแล้ว โดยไม่ต้องสลับ ward
+    await refreshStatuses();
 
     if (!running) {
       clearInterval(pollTimer); pollTimer = null;

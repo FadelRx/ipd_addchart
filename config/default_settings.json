@@ -77,7 +77,9 @@
         "message_re": "^Please confirm save$",
         "yes_button": { "class_name": "Button", "title_re": "^&?(Yes|ใช่|ตกลง|OK)$" }
       },
-      "extra_enter_after_save": 1
+      "extra_enter_after_save": 1,
+      "max_dialogs_before_confirm": 8,
+      "max_dialogs_before_confirm_comment": "จำนวนกล่องที่ยอมให้ HosXP แทรกก่อนกล่องยืนยันการบันทึก (เช่น 'ตรวจพบรายการยา...OPD Visit ก่อน Admit') — ปิดให้เฉพาะกล่องที่มีกฎใน popups.rules ที่ action = click เท่านั้น กล่องที่ไม่รู้จักยังหยุดงานเหมือนเดิม / เกินจำนวนนี้ = ผิดปกติ หยุดงานให้คนตรวจ / ตั้ง 8 เพราะกล่อง OPD Visit ระบุชื่อยาทีละตัว คนไข้ที่มียาซ้ำหลายตัวจึงเจอหลายกล่องติดกัน"
     },
     "popups": {
       "comment": "rules = dialog ที่รู้จักแล้วและตัดสินใจไว้ล่วงหน้า (action: click = ปิดแล้วไปต่อ, skip_patient = ปิดแล้วข้ามคนนี้, halt = หยุดงาน) / allow = dialog ที่ยอมให้กด Enter ผ่านได้ / dialog ที่ไม่เข้าข่ายทั้งสองอย่างจะหยุดงานเสมอ",
@@ -109,6 +111,13 @@
           "action": "skip_patient",
           "means_not_saved": true,
           "button": { "class_name": "Button", "title_re": "^&?(OK|ตกลง)$" }
+        },
+        {
+          "label": "ยาซ้ำกับ OPD Visit ก่อน Admit",
+          "comment": "กล่องนี้เด้งหลังกดบันทึกสั่งยา F9 ก่อนกล่องยืนยัน แจ้งว่ารายการที่กำลังสั่งมีตัวที่ผู้ป่วยรับไปแล้วจาก OPD visit ก่อน admit / เภสัชกรยืนยันว่าเวลาทำมือกด 'ใช่' แล้วบันทึกได้ตามปกติ รายการยาคงเดิมทุกตัว จึงตั้ง action เป็น click ปุ่ม ใช่/Yes / จับจากข้อความเท่านั้น (ไม่มี dialog: รูปพรรณ) เพราะรูปพรรณ #32770 + Yes/No ซ้ำกับกล่องยืนยันการบันทึกเป๊ะ ๆ ถ้าจับจากรูปพรรณจะแยกไม่ออก / ถ้าข้อความจริงไม่ตรง regex นี้ โรบอทจะหยุดงานเหมือนเดิม (ปลอดภัยไว้ก่อน) แล้วค่อยเอาข้อความจาก data\\scans\\dialog_*.txt มาแก้ regex",
+          "match": "ตรวจพบ[\\s\\S]{0,120}OPD\\s*Visit[\\s\\S]{0,40}Admi[td]",
+          "action": "click",
+          "button": { "title_re": "^&?\\s*(Yes|ใช่)\\s*$" }
         },
         {
           "label": "หน้าต่างแจ้งรายการยาที่ผู้ป่วยแพ้ (Allergy Notice)",

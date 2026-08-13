@@ -297,10 +297,68 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
         )
 
     # --- 5. popup ยืนยัน: กดให้เฉพาะข้อความที่อนุญาตไว้ล่วงหน้าเท่านั้น ---
-    try:
-        popup = session.wait_for_popup(timeout=float(steps.get("confirm_timeout", 12)))
-    except Exception as e:
-        raise AmbiguousSaveError(f"รอ popup ยืนยันไม่สำเร็จ: {e} — ตรวจหน้าจอ HosXP")
+    # HosXP แทรกกล่องเตือนของตัวเองก่อนกล่องยืนยันได้ (เช่น "ตรวจพบรายการยาที่สั่ง
+    # ผู้ป่วยได้รับแล้วจาก OPD Visit ก่อน Admit") — เดิมกล่องพวกนี้ทำให้หยุดทั้งงานเสมอ
+    # เพราะจังหวะนี้ไม่ได้อ่าน robot.popups.rules เลย ตอนนี้อ่านแล้ว แต่คุมแคบกว่าที่อื่น:
+    #   - รับเฉพาะกฎที่ action = click (ปิดแล้วไปต่อ) เท่านั้น
+    #     กฎ halt/skip_patient/review_patient ยังหยุดทั้งงาน เพราะจังหวะนี้ยัง "ไม่รู้ว่ายาออกหรือยัง"
+    #     การข้ามหรือติดธงแล้วไปคนถัดไปจะทิ้งชาร์ตที่ไม่รู้สถานะไว้ข้างหลัง
+    #   - เก็บหลักฐานทุกครั้งที่กดปิด เพราะเป็นการกดในช่วงที่ยาอาจกำลังถูกบันทึก
+    #   - กล่องที่ไม่ตรงกฎไหนเลย ยังหยุดทั้งงานเหมือนเดิมทุกประการ
+    max_pre = int(steps.get("max_dialogs_before_confirm", 3))
+    dismissed_before_confirm = 0
+    popup = None
+    while True:
+        try:
+            popup = session.wait_for_popup(timeout=float(steps.get("confirm_timeout", 12)))
+        except Exception as e:
+            raise AmbiguousSaveError(f"รอ popup ยืนยันไม่สำเร็จ: {e} — ตรวจหน้าจอ HosXP")
+        if popup is None:
+            break
+        pre_h, pre_cls, pre_title, _pre_text = popup
+        pre_dlg = read_dialog(pre_h)
+        # จงใจไม่ส่ง dlg เข้าไป = ปิดการจับกฎ "จากรูปพรรณ" ในจังหวะนี้ ให้จับจากข้อความเท่านั้น
+        # เพราะกล่องยืนยันการบันทึกเองก็มีรูปพรรณ #32770 + Confirm + [Yes/No] เหมือนกฎ
+        # "Select new patient ?" เป๊ะ ๆ ถ้าเครื่องไหนอ่านข้อความในกล่องไม่ได้ กล่องยืนยันจะถูกจับผิดกฎทันที
+        rule, matched_by = session.match_popup_rule(pre_dlg["all"] or pre_title, None, "save")
+        if rule is None:
+            break  # กล่องนี้ต้องเป็นกล่องยืนยัน — ไปตรวจตามกติกาเดิมข้างล่าง
+        label = rule.get("label") or rule.get("match") or pre_cls
+        if dismissed_before_confirm >= max_pre:
+            raise AmbiguousSaveError(
+                f"หลังกดบันทึกมีกล่องแทรกก่อนกล่องยืนยันเกิน {max_pre} กล่อง (กล่องล่าสุดคือ '{label}') "
+                "— ผิดปกติจากที่เคยเจอ หยุดงานทั้งหมด ตรวจหน้าจอ HosXP ก่อนรันใหม่ "
+                + session.keep_evidence(pre_h, f"กล่อง '{label}' ที่เกินเพดานก่อนกล่องยืนยัน")
+            )
+        action = rule.get("action", "halt")
+        if action != "click":
+            raise AmbiguousSaveError(
+                f"หลังกดบันทึกขึ้นกล่อง '{label}' ที่ตั้ง action ไว้เป็น '{action}' "
+                "— จังหวะหลังกดบันทึกยังไม่รู้ว่ายาออกหรือยัง จึงหยุดงานทั้งหมดให้เภสัชกรตรวจเอง "
+                "(กล่องที่จะให้กดผ่านจังหวะนี้ได้ต้องตั้ง action เป็น click เท่านั้น) "
+                + session.keep_evidence(pre_h, f"กล่อง '{label}' ก่อนกล่องยืนยัน (action {action})")
+            )
+        ok, why = session.check_level_rule(rule, pre_dlg["all"] or pre_title)
+        if not ok:
+            raise AmbiguousSaveError(
+                f"หลังกดบันทึกขึ้นกล่อง '{label}' แต่ยังกดปิดให้ไม่ได้: {why} "
+                "— หยุดงานทั้งหมด ปล่อยกล่องนี้ค้างไว้ให้เภสัชกรอ่านและตัดสินใจเอง "
+                + session.keep_evidence(pre_h, f"กล่อง '{label}' ก่อนกล่องยืนยันที่กดปิดให้ไม่ได้")
+            )
+        log(
+            "save",
+            "info",
+            f"หลังกดบันทึกขึ้นกล่องตามกฎ '{label}' ({matched_by}) ก่อนกล่องยืนยัน — ปิดตามกฎแล้วรอกล่องยืนยันต่อ "
+            + session.keep_evidence(pre_h, f"กล่อง '{label}' ที่ปิดตามกฎก่อนกล่องยืนยัน", kind="struct"),
+        )
+        try:
+            session.dismiss_dialog(pre_h, rule, pre_cls)
+        except Exception as e:
+            raise AmbiguousSaveError(
+                f"ปิดกล่อง '{label}' ที่ขึ้นก่อนกล่องยืนยันไม่สำเร็จ: {e} — ตรวจหน้าจอ HosXP"
+            )
+        dismissed_before_confirm += 1
+        popup = None
 
     if popup is None:
         if steps.get("require_confirm", True):

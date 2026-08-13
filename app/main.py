@@ -211,6 +211,19 @@ def api_clear_review(payload: dict = Body(...)):
     return {"ok": True, "removed": removed}
 
 
+@app.get("/api/patients/status")
+def api_patients_status():
+    """สถานะ 'ทำแล้ว / ต้องตรวจเอง' ของวันนี้ทั้งหมด — ให้หน้าเว็บอัปเดตตารางได้ทันทีระหว่าง/หลังรัน
+    (ก่อนหน้านี้ต้องสลับ ward ไปกลับถึงจะเห็นสถานะเปลี่ยน เพราะตารางไม่เคยถูกรีเฟรช)"""
+    idx = db.done_index(db.today_str(), _dedup_hours())
+    return {
+        "done_an": sorted(idx.get("an", ())),
+        "done_hn": sorted(idx.get("hn", ())),
+        "review_an": sorted(idx.get("unknown_an", ())),
+        "review_hn": sorted(idx.get("unknown_hn", ())),
+    }
+
+
 @app.post("/api/patients/confirm_review")
 def api_confirm_review(payload: dict = Body(...)):
     """ยืนยันว่า 'ยาเข้าไปแล้ว' หลังเภสัชกรเข้าไปตรวจใน HosXP
