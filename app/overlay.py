@@ -33,11 +33,18 @@ def launch(status_url: str):
     try:
         import os
 
-        here = os.path.abspath(__file__)
         flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+        if getattr(sys, "frozen", False):
+            # แพ็กเป็น .exe แล้วไม่มีไฟล์ .py บนดิสก์ให้เรียก จึงเรียกตัว exe เองด้วยโหมด --overlay
+            cmd = [sys.executable, "--overlay", status_url]
+            cwd = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            here = os.path.abspath(__file__)
+            cmd = [sys.executable, here, status_url]
+            cwd = os.path.dirname(os.path.dirname(here))
         return subprocess.Popen(
-            [sys.executable, here, status_url],
-            cwd=os.path.dirname(os.path.dirname(here)),
+            cmd,
+            cwd=cwd,
             creationflags=flags,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

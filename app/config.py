@@ -5,10 +5,27 @@ import os
 import threading
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+import sys
+
+FROZEN = getattr(sys, "frozen", False)
+
+# ที่อยู่ไฟล์มี 2 ชุด และต้องแยกให้ขาดเมื่อแพ็กเป็น .exe ไฟล์เดียว
+#   RESOURCE_DIR = ที่อยู่ของไฟล์ "อ่านอย่างเดียว" ที่ถูกฝังมาในตัว exe (static, default_settings)
+#                  ตอนรันจะถูกแตกไว้ในโฟลเดอร์ชั่วคราวและ "ถูกลบทิ้งทุกครั้งที่ปิดโปรแกรม"
+#   BASE_DIR     = โฟลเดอร์ที่ไฟล์ .exe วางอยู่ ใช้เก็บของที่ต้องคงอยู่ (data\, config\settings.json)
+#
+# ถ้าใช้ที่อยู่เดียวกันทั้งคู่ log และประวัติการรันจะหายทุกครั้งที่ปิดโปรแกรม
+if FROZEN:
+    BASE_DIR = Path(sys.executable).resolve().parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    RESOURCE_DIR = BASE_DIR
+
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
-DEFAULT_PATH = CONFIG_DIR / "default_settings.json"
+# ค่าตั้งต้นมากับตัวโปรแกรม ส่วนค่าที่ผู้ใช้ตั้งเองอยู่ข้าง .exe (ไม่ถูกทับเวลาอัปเดตโปรแกรม)
+DEFAULT_PATH = RESOURCE_DIR / "config" / "default_settings.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 # path ของค่าลับใน settings — ใช้ redact ก่อนส่งออกหน้าเว็บ

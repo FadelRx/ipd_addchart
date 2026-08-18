@@ -15,7 +15,8 @@ from .patients import is_done, needs_review, norm_id
 from .runner import manager
 from .winutil import ELEVATION_HELP, is_elevated
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+# ไฟล์หน้าเว็บถูกฝังมาในตัว exe จึงต้องอ่านจาก RESOURCE_DIR ไม่ใช่ที่อยู่ของโค้ด
+STATIC_DIR = config.RESOURCE_DIR / "app" / "static" if config.FROZEN else Path(__file__).resolve().parent / "static"
 SINGLE_INSTANCE_PORT = 47770  # ใช้เป็นล็อกกันเปิดโปรแกรมซ้อนกันหลายโปรเซส
 _lock_socket = None
 
