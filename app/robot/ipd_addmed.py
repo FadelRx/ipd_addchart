@@ -105,7 +105,7 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
             back = session.find_one(ipd, back_spec, "ปุ่มเลือกใหม่", STEP_TIMEOUT)
         if back is not None:
             log("step", "info", "หน้าจอยังอยู่ที่คนก่อนหน้า — กดปุ่ม 'เลือกใหม่' เพื่อกลับไปหน้าเลือกคนไข้")
-            session.timed(back.click_input, 15, "กดปุ่มเลือกใหม่")
+            session.click_control(back, "ปุ่มเลือกใหม่")
             time.sleep(t("after_select_new", 1.5))
             session.handle_popups("หลังกดเลือกใหม่", 2, t("between_enters", 0.5))
             grp = session.find_one(ipd, select_spec, "กรอบเลือกคนไข้", STEP_TIMEOUT)
@@ -249,7 +249,7 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
                     f"ไม่พบปุ่ม '{name}' ที่มองเห็นได้ในหน้าจอหลังโหลดคนไข้ "
                     "— ตรวจว่าอยู่แท็บสั่งยาจริง หรือแก้ selector ที่ robot.steps.action_buttons"
                 )
-            session.timed(btn.click_input, 15, f"กดปุ่ม {name}")
+            session.click_control(btn, f"ปุ่ม {name}")
             dirty = True
             log("action", "info", f"กดปุ่ม {name}")
             time.sleep(float(spec.get("wait_after", 1.0)))
@@ -283,7 +283,7 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
                 "ไม่พบปุ่มบันทึกที่มองเห็นได้ — ไม่ใช้ปุ่มลัด F9 แทน เพราะถ้าโฟกัสไม่ได้อยู่ที่ฟอร์ม "
                 "ปุ่มลัดอาจไปตกที่หน้าต่างอื่น ตรวจ robot.steps.save_button"
             )
-        session.timed(save_btn.click_input, 15, "กดปุ่มบันทึก")
+        session.click_control(save_btn, "ปุ่มบันทึก")
         log("save", "info", f"กดปุ่ม {save_spec.get('label', 'บันทึก')} แล้ว รอ popup ยืนยัน")
         time.sleep(t("after_save_key", 1.0))
     except CancelledMidPatient:

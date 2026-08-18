@@ -782,6 +782,44 @@ class HosxpSession:
                 return True
         return False
 
+    def click_control(self, ctrl, what: str, attempts: int = 4) -> None:
+        """คลิกปุ่มบนฟอร์ม โดยยืนยันก่อนทุกครั้งว่า "จุดที่จะคลิกคือปุ่มนั้นจริง"
+
+        เดิมปุ่ม New / Add Chart F5 / บันทึก ถูกคลิกด้วยพิกัดล้วน ๆ โดยไม่ตรวจอะไรเลย
+        ซึ่งเป็นการคลิกที่อันตรายที่สุดในระบบ ถ้ามีหน้าต่างอื่นลอยทับ หรือมือคนไปโดนเมาส์
+        จังหวะนั้นพอดี คลิกจะไปตกที่อื่นโดยไม่มีใครรู้
+
+        ตอนนี้: ตรวจว่าจุดกึ่งกลางปุ่มเป็นของปุ่มนั้นจริงก่อนคลิก ถ้าไม่ใช่ก็ดึงหน้าต่างขึ้นมาแล้วลองใหม่
+        (มือไปโดนเมาส์ = แค่ลองใหม่ ไม่ใช่พลาดทั้งคน) ครบจำนวนครั้งแล้วยังไม่ได้ค่อยยอมแพ้
+        """
+        h = int(ctrl.handle)
+        blocker = ""
+        for attempt in range(max(1, attempts)):
+            rect = winapi.window_rect(h)
+            if not rect:
+                raise RobotError(f"อ่านตำแหน่งของ {what} ไม่ได้ — ไม่กดอะไรทั้งสิ้น")
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            on_top = winapi.window_from_point(cx, cy)
+            if on_top == h or winapi.is_descendant(h, on_top):
+                self.timed(ctrl.click_input, 15, f"กด{what}")
+                return
+            try:
+                blocker = winapi.class_name_of(on_top)
+            except Exception:
+                blocker = "?"
+            if attempt == 0:
+                self.log("click", "retry", f"จุดที่จะกด{what}ถูก [{blocker}] บังอยู่ — ดึงหน้าจอขึ้นมาแล้วลองใหม่")
+            try:
+                if self.main_handle:
+                    self.bring_to_front(self.main_handle)
+            except Exception:
+                pass
+            time.sleep(0.4 + 0.3 * attempt)
+        raise RobotError(
+            f"กด{what}ไม่ได้ เพราะจุดที่จะคลิกถูก [{blocker}] บังอยู่ตลอด — "
+            "ไม่กดเพื่อกันคลิกผิดที่" + self.describe_blocking()
+        )
+
     def press_on_popup(self, handle: int, keys: str) -> bool:
         """ส่งปุ่มไปยัง dialog ที่ระบุโดยเฉพาะ (ดึงมาเป็นหน้าต่างหน้าสุดก่อน) แล้วรอจนมันปิด
         คืน True ถ้า dialog นั้นหายไปจริง"""

@@ -170,5 +170,9 @@
     ],
     "circuit_breaker": { "pause_after_fails": 3, "pause_seconds": 60, "abort_after_fails": 6 }
   },
-  "server": { "port": 8770 }
+  "server": {
+    "port": 8770,
+    "show_overlay": true,
+    "show_overlay_comment": "แสดงแถบความคืบหน้าลอยเหนือหน้าจอ HosXP ระหว่างคีย์ (คนละโปรเซส ไม่แย่งโฟกัส) — ตั้ง false ถ้าไม่ต้องการ"
+  }
 }

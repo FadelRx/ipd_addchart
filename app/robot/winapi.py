@@ -223,6 +223,8 @@ def window_rect(handle):
 
 user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
 user32.PrintWindow.restype = wintypes.BOOL
+user32.GetParent.argtypes = [wintypes.HWND]
+user32.GetParent.restype = wintypes.HWND
 user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
 user32.GetDlgCtrlID.restype = ctypes.c_int
 
@@ -233,6 +235,22 @@ def print_window(handle, hdc, flags: int = 2) -> bool:
         return bool(user32.PrintWindow(handle, hdc, flags))
     except Exception:
         return False
+
+
+def is_descendant(parent, child) -> bool:
+    """child อยู่ใต้ parent หรือเป็นตัวเดียวกันไหม — ใช้ยืนยันว่าคลิกโดนปุ่มที่ตั้งใจ
+    (ปุ่มบางตัวมี control ลูกซ้อนอยู่ จุดกึ่งกลางจึงคืน handle ของลูกแทนตัวปุ่มเอง)"""
+    if not parent or not child:
+        return False
+    h = int(child)
+    for _ in range(12):   # กันลูปไม่รู้จบถ้าโครงสร้างหน้าต่างเพี้ยน
+        if h == int(parent):
+            return True
+        nxt = user32.GetParent(h)
+        if not nxt or int(nxt) == h:
+            return False
+        h = int(nxt)
+    return False
 
 
 def control_id(handle) -> int:

@@ -14,6 +14,7 @@ class JobManager:
         self._cancel = threading.Event()
         self._state = {"running": False}
         self._blocked = ""  # เหตุผลที่ห้ามรันงานใหม่จนกว่าจะรีสตาร์ตโปรแกรม
+        self._overlay = None  # โปรเซสแถบความคืบหน้าที่ลอยเหนือ HosXP
 
     def _block(self, reason: str) -> None:
         with self._lock:
@@ -90,7 +91,24 @@ class JobManager:
                 target=self._worker, args=(run_id, patients, dry_run), daemon=True
             )
             self._thread.start()
-            return run_id
+        # เปิดแถบความคืบหน้าลอยเหนือ HosXP (คนละโปรเซส ล้มเหลวได้โดยไม่กระทบงานคีย์ยา)
+        # อยู่นอก lock เพราะการเปิดโปรเซสใหม่ช้ากว่าการจับ lock ค้างไว้ที่ควรทำ
+        self._start_overlay()
+        return run_id
+
+    def _start_overlay(self) -> None:
+        try:
+            settings = load_settings()
+            if not settings.get("server", {}).get("show_overlay", True):
+                return
+            if self._overlay and self._overlay.poll() is None:
+                return  # ยังเปิดค้างจากรอบก่อน ใช้ตัวเดิมต่อได้
+            from .overlay import launch
+
+            port = int(settings.get("server", {}).get("port", 8770))
+            self._overlay = launch(f"http://127.0.0.1:{port}/api/status")
+        except Exception:
+            self._overlay = None
 
     def stop(self) -> None:
         # ตั้ง event ใต้ lock เดียวกับ start() — กันสั่งหยุดไปโดนงานใหม่ที่เพิ่งเริ่ม
@@ -222,6 +240,9 @@ class JobManager:
                 cur.update(
                     {"an": p.get("an", ""), "hn": p.get("hn", ""), "ptname": p.get("ptname", "")}
                 )
+                # ตึก/เตียง ใช้แสดงบนแถบลอยเหนือ HosXP เท่านั้น ไม่ได้ใช้ตัดสินใจอะไร
+                cur["ward"] = p.get("ward_name") or p.get("ward") or ""
+                cur["bedno"] = p.get("bedno") or ""
                 self._set(done=i, ok=ok, fail=fail, skip=skip, current=dict(cur))
 
                 if not p.get(patient_key):
