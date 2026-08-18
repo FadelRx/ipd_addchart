@@ -14,6 +14,37 @@ import time
 import traceback
 
 
+def _ensure_std_streams() -> None:
+    """แพ็กแบบไม่มีหน้าต่างคอนโซล (--noconsole) ทำให้ sys.stdout/sys.stderr เป็น None
+
+    ไลบรารีจำนวนมากถือว่าสองตัวนี้ต้องมีเสมอ — uvicorn เรียก sys.stdout.isatty()
+    ตอนตั้งค่า log จึงพังทันทีที่เปิดโปรแกรม (เจอจริงตอนดับเบิลคลิกไฟล์ exe ครั้งแรก)
+    ต้องเปลี่ยนเป็นไฟล์จริงก่อนแตะอะไรทั้งสิ้น
+
+    หมายเหตุ: ตอนสั่งรันจากหน้าต่างคำสั่ง โปรเซสจะได้ stdout ติดมาด้วย บั๊กนี้จึงไม่โผล่
+    ต้องทดสอบด้วยการเปิดแบบไม่มีคอนโซลเท่านั้นถึงจะเจอ
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    stream = None
+    try:
+        from app.config import DATA_DIR
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        stream = open(DATA_DIR / "app.log", "a", encoding="utf-8", buffering=1)
+    except Exception:
+        try:
+            import os
+
+            stream = open(os.devnull, "w")
+        except Exception:
+            return
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def _message_box(title: str, text: str) -> None:
     try:
         import ctypes
@@ -49,6 +80,7 @@ def _open_browser_later(url: str, delay: float = 2.5) -> None:
 
 
 def main() -> int:
+    _ensure_std_streams()   # ต้องทำก่อนทุกอย่าง ไม่งั้น uvicorn/tkinter พังตั้งแต่ยังไม่เริ่ม
     argv = sys.argv[1:]
 
     # --- โหมดแถบความคืบหน้า (โปรแกรมเรียกตัวเอง) ---
