@@ -291,3 +291,91 @@ def child_handles(handle, limit: int = 60) -> list:
     except Exception:
         pass
     return out
+
+# ---------- สั่งงานแบบส่ง message ตรงไปที่ control (ไม่ใช้เมาส์/คีย์บอร์ดจริง) ----------
+# พิสูจน์กับ HosXP จริงแล้ว 18 ส.ค. 2569 ว่าใช้ได้ "แม้ HosXP ไม่ได้เป็นหน้าต่างหน้าสุด"
+# (ตอนทดสอบหน้าสุดคือ ConsoleWindowClass) จึงเปิดทางให้ผู้ใช้ทำงานอื่นระหว่างโรบอทคีย์ได้
+# ข้อสำคัญ: โปรเซสต้องมีสิทธิ์แอดมิน ไม่งั้น Windows บล็อกการส่ง message แบบ "เขียน" เงียบ ๆ
+
+WM_SETTEXT = 0x000C
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_CHAR = 0x0102
+EM_SETSEL = 0x00B1
+EM_REPLACESEL = 0x00C2
+BM_CLICK = 0x00F5
+VK_RETURN = 0x0D
+
+user32.SendMessageTimeoutW.restype = LRESULT  # ประกาศไว้แล้วข้างบน คงไว้ให้ชัด
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wintypes.BOOL
+
+
+def focused_control(handle) -> int:
+    """control ที่ถือโฟกัสคีย์บอร์ดอยู่ "ภายในเธรดของหน้าต่างนั้น"
+
+    ใช้ GetGUIThreadInfo ไม่ใช่ GetFocus เพราะ GetFocus บอกได้เฉพาะเธรดตัวเอง
+    และค่านี้ไม่ขึ้นกับว่าหน้าต่างไหนเป็นหน้าสุด จึงส่งปุ่มไปถูกที่แม้ HosXP อยู่ข้างหลัง
+    """
+    if not handle:
+        return 0
+    try:
+        tid = user32.GetWindowThreadProcessId(handle, None)
+        info = GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(GUITHREADINFO)
+        if user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+            return int(info.hwndFocus or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def set_text(handle, text: str, timeout_ms: int = 2000) -> bool:
+    """ใส่ข้อความลง control ตรง ๆ — คืน True เมื่อส่งสำเร็จ (ผู้เรียกต้องอ่านกลับมาตรวจเองเสมอ)"""
+    ok, _ = send_timeout(handle, WM_SETTEXT, 0, ctypes.c_wchar_p(text), timeout_ms)
+    return bool(ok)
+
+
+def replace_text(handle, text: str, timeout_ms: int = 2000) -> bool:
+    """เลือกข้อความทั้งหมดแล้ววางทับ — ใช้กับช่องที่ไม่ยอมรับ WM_SETTEXT"""
+    send_timeout(handle, EM_SETSEL, 0, ctypes.c_void_p(-1), timeout_ms)
+    ok, _ = send_timeout(handle, EM_REPLACESEL, 1, ctypes.c_wchar_p(text), timeout_ms)
+    return bool(ok)
+
+
+def click_button(handle, timeout_ms: int = 4000) -> bool:
+    """กดปุ่มโดยส่ง BM_CLICK — ไปถึงปุ่มนั้นตรง ๆ จึงคลิกผิดหน้าต่างไม่ได้เลย"""
+    ok, _ = send_timeout(handle, BM_CLICK, 0, None, timeout_ms)
+    return bool(ok)
+
+
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, ULONG_PTR, ctypes.c_ssize_t]
+user32.PostMessageW.restype = wintypes.BOOL
+
+
+def press_key(handle, vk: int = VK_RETURN) -> bool:
+    """กดปุ่มคีย์บอร์ด 1 ครั้งใส่ control ที่ระบุ (ไม่ผ่านคีย์บอร์ดจริง)"""
+    if not handle:
+        return False
+    try:
+        user32.PostMessageW(handle, WM_KEYDOWN, vk, 0)
+        user32.PostMessageW(handle, WM_KEYUP, vk, 0xC0000000)
+        return True
+    except Exception:
+        return False

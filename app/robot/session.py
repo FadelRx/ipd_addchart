@@ -627,6 +627,35 @@ class HosxpSession:
         คืน True เมื่ออ่านค่ากลับมาตรวจแล้วตรง, False เมื่ออ่านค่ากลับไม่ได้"""
         self.guard()
         shown = "***" if secret else text
+        h = int(ctrl.handle)
+
+        if self.use_messages():
+            # ส่งข้อความไปที่ช่องตรง ๆ ไม่ใช้เมาส์/คีย์บอร์ด/clipboard
+            # พิสูจน์กับช่อง TdxEdit ของ HosXP แล้วว่ารับทั้ง WM_SETTEXT และ EM_REPLACESEL
+            # แม้ HosXP ไม่ได้อยู่หน้าสุด (ดู tools/test_no_mouse.py)
+            for how, fn in (("WM_SETTEXT", winapi.set_text), ("EM_REPLACESEL", winapi.replace_text)):
+                try:
+                    fn(h, text)
+                except Exception as e:
+                    self.log("type", "retry", f"ส่งข้อความด้วย {how} ไม่ได้: {e}")
+                    continue
+                time.sleep(0.25)
+                if not verify:
+                    return True
+                current = (safe_text(h) or "").strip()
+                if values_equal(current, text):
+                    return True
+                self.log(
+                    "type",
+                    "retry",
+                    f"ใส่ค่าด้วย {how} แล้วอ่านกลับไม่ตรง "
+                    f"(ต้องการ '{shown}' ได้ '{current if not secret else '***'}')",
+                )
+            raise RobotError(
+                f"ใส่ค่าลงช่องไม่สำเร็จในโหมดส่งคำสั่งตรง (ต้องการ '{shown}') — "
+                "ตรวจว่าโปรแกรมนี้รันด้วยสิทธิ์แอดมิน หรือสลับ robot.input_mode กลับเป็น \"input\""
+            )
+
         for attempt in (1, 2):
             ctrl.click_input()
             time.sleep(0.2)
@@ -751,6 +780,17 @@ class HosxpSession:
         # ยืนยันว่าจุดที่จะคลิกเป็นปุ่มนั้นจริง ๆ ก่อนคลิก
         # การคลิกใช้พิกัดบนจอ ถ้ามีหน้าต่างอื่นบังอยู่ (ดึงขึ้นหน้าสุดไม่สำเร็จ ซึ่ง Windows บล็อกบ่อย)
         # คลิกจะไปตกหน้าต่างอื่นแทน — ในระบบสั่งยาห้ามคลิกมั่วเด็ดขาด
+        if self.use_messages():
+            # ส่ง BM_CLICK ไปที่ปุ่มนั้นตรง ๆ ไม่ต้องดึงกล่องขึ้นหน้าสุด และคลิกผิดที่ไม่ได้
+            if not winapi.click_button(h):
+                raise RobotError(f"ส่งคำสั่งกดปุ่ม '{txt}' ไม่สำเร็จ — ตรวจสิทธิ์แอดมิน")
+            self.log("dialog", "info", f"กดปุ่ม '{txt}' ในกล่อง dialog แล้ว")
+            for _ in range(20):
+                time.sleep(0.2)
+                if not window_alive(handle):
+                    return True
+            return False
+
         rect = winapi.window_rect(h)
         if not rect:
             raise RobotError(f"อ่านตำแหน่งปุ่ม '{txt}' ไม่ได้ — ไม่กดอะไรทั้งสิ้น")
@@ -782,6 +822,31 @@ class HosxpSession:
                 return True
         return False
 
+    def use_messages(self) -> bool:
+        """สั่งงาน HosXP ด้วยการส่ง message ตรงไปที่ control แทนเมาส์/คีย์บอร์ดจริงหรือไม่
+
+        โหมด messages: ผู้ใช้ขยับเมาส์/พิมพ์งานอื่นได้ระหว่างโรบอททำงาน และคลิกผิดหน้าต่างไม่ได้เลย
+                       เพราะคำสั่งวิ่งไปที่ control ที่ระบุโดยตรง ไม่เกี่ยวกับพิกัดบนจอ
+        โหมด input   : ของเดิม ขยับเมาส์จริง กดคีย์บอร์ดจริง (ต้องไม่มีใครแตะเครื่อง)
+
+        พิสูจน์กับ HosXP จริงแล้วว่าโหมด messages ใช้ได้แม้ HosXP ไม่ได้อยู่หน้าสุด
+        (ดู tools/test_no_mouse.py) — แต่ต้องรันด้วยสิทธิ์แอดมินเสมอ
+        """
+        return str(self.robot_cfg.get("input_mode", "input")).lower() == "messages"
+
+    def press_keys_msg(self, keys: str, scope_handle: int = 0) -> bool:
+        """ส่งปุ่ม Enter ไปยัง control ที่ถือโฟกัสอยู่ในเธรดของ HosXP (ไม่ใช้คีย์บอร์ดจริง)
+
+        รองรับเฉพาะ {ENTER} เพราะเป็นปุ่มเดียวที่ลำดับงานนี้ใช้ — ปุ่มอื่นให้เติมเมื่อจำเป็นจริง
+        คืน False ถ้าส่งไม่ได้ ผู้เรียกต้องมีทางตรวจผลลัพธ์เองเสมอ
+        """
+        if "{ENTER}" not in (keys or "").upper():
+            return False
+        target = winapi.focused_control(scope_handle or self.main_handle or 0)
+        if not target:
+            target = scope_handle or self.main_handle or 0
+        return winapi.press_key(target, winapi.VK_RETURN)
+
     def click_control(self, ctrl, what: str, attempts: int = 4) -> None:
         """คลิกปุ่มบนฟอร์ม โดยยืนยันก่อนทุกครั้งว่า "จุดที่จะคลิกคือปุ่มนั้นจริง"
 
@@ -793,6 +858,12 @@ class HosxpSession:
         (มือไปโดนเมาส์ = แค่ลองใหม่ ไม่ใช่พลาดทั้งคน) ครบจำนวนครั้งแล้วยังไม่ได้ค่อยยอมแพ้
         """
         h = int(ctrl.handle)
+        if self.use_messages():
+            # ส่งคำสั่งกดไปที่ปุ่มนั้นตรง ๆ — ไม่มีพิกัด จึงไม่มีทางคลิกผิดหน้าต่าง
+            # และไม่ต้องดึง HosXP ขึ้นหน้าสุด ผู้ใช้ทำงานอื่นต่อได้
+            if winapi.click_button(h):
+                return
+            raise RobotError(f"ส่งคำสั่งกด{what}ไปที่ HosXP ไม่สำเร็จ — ตรวจว่าโปรแกรมนี้รันด้วยสิทธิ์แอดมิน")
         blocker = ""
         for attempt in range(max(1, attempts)):
             rect = winapi.window_rect(h)
@@ -823,12 +894,17 @@ class HosxpSession:
     def press_on_popup(self, handle: int, keys: str) -> bool:
         """ส่งปุ่มไปยัง dialog ที่ระบุโดยเฉพาะ (ดึงมาเป็นหน้าต่างหน้าสุดก่อน) แล้วรอจนมันปิด
         คืน True ถ้า dialog นั้นหายไปจริง"""
-        winapi.set_foreground(handle)
-        time.sleep(0.2)
-        fg = foreground_info()[0]
-        if fg != handle:
-            raise RobotError("ดึง dialog ขึ้นมาเป็นหน้าต่างหน้าสุดไม่ได้ — ไม่กดปุ่มใด ๆ เพื่อกันกดผิดหน้าต่าง")
-        keyboard.send_keys(keys, pause=0.05)
+        if self.use_messages() and self.press_keys_msg(keys, handle):
+            pass   # ส่งปุ่มไปที่กล่องนั้นตรง ๆ ไม่ต้องดึงขึ้นหน้าสุด
+        else:
+            winapi.set_foreground(handle)
+            time.sleep(0.2)
+            fg = foreground_info()[0]
+            if fg != handle:
+                raise RobotError(
+                    "ดึง dialog ขึ้นมาเป็นหน้าต่างหน้าสุดไม่ได้ — ไม่กดปุ่มใด ๆ เพื่อกันกดผิดหน้าต่าง"
+                )
+            keyboard.send_keys(keys, pause=0.05)
         for _ in range(20):  # รอสูงสุด ~4 วินาที
             time.sleep(0.2)
             if not window_alive(handle):

@@ -164,8 +164,12 @@ def run_patient(session: HosxpSession, patient: dict, dry_run: bool, cancel_chec
             log("step", "info", "คนไข้ที่ต้องการขึ้นแล้ว — ไม่กดปุ่มเพิ่ม")
             break
         keys = ks.get("keys", "{ENTER}")
-        keyboard.send_keys(keys, pause=0.05)
-        log("step", "info", f"กด {ks.get('label') or keys}")
+        # โหมดส่งคำสั่งตรง: ส่ง Enter ไปที่ control ที่ถือโฟกัสในเธรดของ HosXP
+        # ไม่ผ่านคีย์บอร์ดจริง จึงไม่หลุดไปโดนหน้าต่างอื่นถ้าผู้ใช้กำลังพิมพ์งานอยู่
+        sent = session.press_keys_msg(keys, int(ipd.handle)) if session.use_messages() else False
+        if not sent:
+            keyboard.send_keys(keys, pause=0.05)
+        log("step", "info", f"กด {ks.get('label') or keys}" + ("" if sent else " (คีย์บอร์ดจริง)"))
         time.sleep(float(ks.get("wait", 1.2)))
         session.handle_popups("load_patient", int(t("load_popup_checks", 3)), t("between_enters", 0.5))
 
